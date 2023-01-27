@@ -2,3 +2,7 @@ name = "AdaptChebInterp"
 uuid = "78faba9b-a54b-441f-8118-62407cbe4e59"
 authors = ["lxvm <lorenzo@vanmunoz.com>"]
 version = "0.1.0"
+
+[deps]
+FastChebInterp = "cf66c380-9a80-432c-aff8-4f9c79c0bdde"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
