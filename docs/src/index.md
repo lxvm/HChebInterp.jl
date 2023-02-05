@@ -1,0 +1,5 @@
+# AdaptChebInterp.jl
+
+```@docs
+AdaptChebInterp
+```
