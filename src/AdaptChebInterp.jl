@@ -8,6 +8,7 @@
 A package for adaptive Chebyshev interpolation of 1D functions using
 [`FastChebInterp.jl`](https://github.com/stevengj/FastChebInterp.jl).
 Algorithms based on work by [Kaye et al.](http://arxiv.org/abs/2211.12959).
+See the tests for examples.
 """
 module AdaptChebInterp
 
