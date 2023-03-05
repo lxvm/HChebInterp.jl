@@ -14,12 +14,12 @@ inspired by [Chebfun](https://www.chebfun.org/ ).
 To construct a polynomial interpolant `p` of the function `f` on the interval
 `[a,b]` to a user-specified tolerance can be done with the interface
 ```julia
-julia> using AdaptChebInterp
+julia> using HChebInterp
 
 julia> f(x) = sin(exp(x^2))
 f (generic function with 1 method)
 
-julia> p = fastadaptchebinterp(f, 0, 1; atol=1e-5)
+julia> p = hchebinterp(f, 0, 1; atol=1e-5)
 (::AdaptChebInterp.PanelPoly{Float64, Float64}) (generic function with 1 method)
 ```
 Then `p` can be evaluated using its functor interface at any point in the

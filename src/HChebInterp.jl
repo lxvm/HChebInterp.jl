@@ -5,19 +5,19 @@
 #   refinement one dimension at a time, a la HCubature, and everything in between
 
 """
-A package for adaptive Chebyshev interpolation of 1D functions using
+A package for h-adaptive Chebyshev interpolation of 1D functions using
 [`FastChebInterp.jl`](https://github.com/stevengj/FastChebInterp.jl).
 Algorithms based on work by [Kaye et al.](http://arxiv.org/abs/2211.12959).
 See the tests for examples.
 """
-module AdaptChebInterp
+module HChebInterp
 
 using LinearAlgebra
 
 using StaticArrays
 using FastChebInterp: chebpoint, chebpoints, chebinterp, ChebPoly
 
-export adaptchebinterp, fastadaptchebinterp
+export hchebinterp, SpectralError, HAdaptError
 
 struct Panel{Td}
     a::Td # left endpoint
@@ -63,26 +63,42 @@ function chebpoints!(p::Vector{Float64}, order::Int, a::Ta, b::Tb) where {Ta,Tb}
 end
 
 """
-    adaptchebinterp(f, a, b; order=4, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1, npoints=10)
-    
-Return a piecewise polynomial interpolant of `f` on the interval ``[a,b]`` of
-degree `order` that is pointwise accurate to the requested tolerances. The error
-estimate used by this routine to adaptively refine the panels is to bisect the
-panel and construct an interpolant on each subpanel and to take the error to be
-the maximum `norm` of the difference of the original interpolant and the refined
-interpolants evaluated on an equispaced grid of `npoints(order+1)` points. If a
-panel is accepted, the implementation uses the original interpolant for the
-panel and discards the refinements. (If unnecessary function evaluations to
-construct the interpolant should be avoided, see `fastadaptchebinterp`.)
-`norm` is also used set the error tolerance of a panel, which is `max(atol,
-maximum(rtol*norm(f.(p))))` where `p` are the Chebyshev nodes on the panel.
+    AbstractAdaptCriterion
+
+Abstract supertype for error criteria for adaptive refinement.
 """
-function adaptchebinterp(f, a::A, b::B; order=4, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1, npoints=10) where {A,B}
-    T = float(promote_type(A, B))
-    adaptchebinterp_(f, T(a), T(b), order, atol, rtol, norm, maxevals, initdiv, npoints)
+abstract type AbstractAdaptCriterion end
+
+"""
+    SpectralError(; n=3, abs=abs)
+
+Estimate the error of the interpolant by as the sum of the norm of the last `n`
+Chebyshev coefficients. Use `abs` to compute the norm of each coefficient.
+"""
+struct SpectralError{A} <: AbstractAdaptCriterion
+    n::Int
+    abs::A
 end
 
-function adaptchebinterp_(f, a::T, b::T, order, atol, rtol_, norm, maxevals, initdiv, npoints) where T
+SpectralError(; n=10, abs=abs) = SpectralError(n, abs)
+
+"""
+    HAdaptError(; n=10)
+
+Estimate the error of the interpolant by dividing the panel into two, computing
+interpolants on the subpanels, and computing the maximum error between
+interpolants at `n*p` equispaced points, where `p` is the number of points used
+to compute each interpolant.
+"""
+struct HAdaptError <: AbstractAdaptCriterion
+    n::Int
+end
+HAdaptError(; n=10) = HAdaptError(n)
+
+
+
+function hchebinterp_(criterion::HAdaptError, f, a::T, b::T, order, atol, rtol_, norm, maxevals, initdiv) where T
+    npoints = criterion.n
     rtol = rtol_ == 0 == atol ? sqrt(eps(T)) : rtol_
     (rtol < 0 || atol < 0) && throw(ArgumentError("invalid negative tolerance"))
     maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
@@ -147,7 +163,7 @@ function adaptchebinterp_(f, a::T, b::T, order, atol, rtol_, norm, maxevals, ini
             npanels += 2
             panels[i] = Panel(panel.a, panel.b, 0, npanels-1, npanels)
             
-            E = evalerror(c, lc, rc, lb, mid, ub, order, norm, npoints)
+            E = evalhadapterror(c, lc, rc, lb, mid, ub, order, norm, npoints)
             if E > max(atol, rtol*max(lf, rf))
                 # these lines indicate where the algorithm should refine again
                 push!(val_idx_, idx, nvals)
@@ -167,7 +183,7 @@ function adaptchebinterp_(f, a::T, b::T, order, atol, rtol_, norm, maxevals, ini
     PanelPoly(valtree, searchtree, a, b, initdiv)
 end
 
-function evalerror(c, lc, rc, a, mid, b, order, norm, npoints)
+function evalhadapterror(c, lc, rc, a, mid, b, order, norm, npoints)
     # idea: compare the maximum difference on a dense grid, which fails
     # when the polynomial degree of the true function is too high
     E = norm(c(a) - lc(a))
@@ -183,25 +199,9 @@ function evalerror(c, lc, rc, a, mid, b, order, norm, npoints)
 end
 
 
-
-"""
-    fastadaptchebinterp(f, a, b; order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1, abs=abs, ncoeffs=3)
-    
-Return a piecewise polynomial interpolant of `f` on the interval ``[a,b]`` of
-degree `order` that is pointwise accurate to the requested tolerances. The error
-estimate used by this routine to adaptively refine the panels is the sum of the
-`abs` value of the last `ncoeffs` Chebyshev coefficients of the interpolant on
-that panel. `norm` is used set the error tolerance of a panel, which is
-`max(atol, rtol*maximum(norm, f.(p)))` where `p` are the Chebyshev nodes on the
-panel. In the case of a non-scalar function, `abs` may have to be an array norm.
-"""
-function fastadaptchebinterp(f, a::A, b::B; order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1, abs=abs, ncoeffs=3) where {A,B}
-    @assert ncoeffs <= order+1 "insufficient coefficients to estimate error"
-    T = float(promote_type(A, B))
-    fastadaptchebinterp_(f, T(a), T(b), order, atol, rtol, norm, maxevals, initdiv, abs, ncoeffs)
-end
-
-function fastadaptchebinterp_(f, a::T, b::T, order, atol, rtol_, norm, maxevals, initdiv, abs, ncoeffs) where T
+function hchebinterp_(criterion::SpectralError, f, a::T, b::T, order, atol, rtol_, norm, maxevals, initdiv) where T
+    ncoeffs = criterion.n
+    abs = criterion.abs
     rtol = rtol_ == 0 == atol ? sqrt(eps(T)) : rtol_
     (rtol < 0 || atol < 0) && throw(ArgumentError("invalid negative tolerance"))
     maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
@@ -242,7 +242,7 @@ function fastadaptchebinterp_(f, a::T, b::T, order, atol, rtol_, norm, maxevals,
             numevals > maxevals && break
             
             c = valtree[idx]
-            E = fastevalerror(c, abs, order, ncoeffs)
+            E = evalspectralerror(c, abs, order, ncoeffs)
 
             if E > max(atol, rtol*nrmtree[idx])
                 
@@ -280,7 +280,7 @@ function fastadaptchebinterp_(f, a::T, b::T, order, atol, rtol_, norm, maxevals,
 end
 
 
-function fastevalerror(c::ChebPoly{1}, abs, order, ncoeffs)
+function evalspectralerror(c::ChebPoly{1}, abs, order, ncoeffs)
     # idea: compare size (better: rate of decay) of the Chebyshev coefficients
     n = max(0, ncoeffs + length(c.coefs) - order - 1) # FastChebInterp truncates coefficients under a tolerance
     E = (n-ncoeffs)*eps(abs(c.coefs[end])) # initialize error, possibly offset by truncation
@@ -288,6 +288,20 @@ function fastevalerror(c::ChebPoly{1}, abs, order, ncoeffs)
         E += abs(c.coefs[i])
     end
     return E
+end
+
+"""
+    hchebinterp(f, a, b, [criterion=SpectralError()]; order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1)
+    
+Return a piecewise polynomial interpolant of `f` on the interval ``[a,b]`` of
+degree `order` that is pointwise accurate to the requested tolerances. Uses
+`criterion::AbstractAdaptCriterion` to estimate the interpolant error for
+h-adaptation. If `HAdaptError()` is used as the criterion, it may be appropriate
+to reduce the `order` to 4 to avoid unnecessary function evaluations.
+"""
+function hchebinterp(f, a::A, b::B, criterion=SpectralError(); order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1) where {A,B}
+    T = float(promote_type(A, B))
+    hchebinterp_(criterion, f, T(a), T(b), order, atol, rtol, norm, maxevals, initdiv)
 end
 
 end
