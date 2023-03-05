@@ -1,5 +1,5 @@
-# AdaptChebInterp.jl
+# HChebInterp.jl
 
 ```@docs
-AdaptChebInterp
+HChebInterp
 ```

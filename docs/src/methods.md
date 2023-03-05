@@ -1,7 +1,7 @@
 # Manual
 
 ```@autodocs
-Modules = [AdaptChebInterp]
+Modules = [HChebInterp]
 Private = false
-Order   = [:function]
+Order   = [:type, :function]
 ```
