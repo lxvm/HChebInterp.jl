@@ -1,5 +1,5 @@
 push!(LOAD_PATH, "../src")
-using Documenter, AdaptChebInterp
+using Documenter, HChebInterp
 
 Documenter.HTML(
     mathengine = MathJax3(Dict(
@@ -13,8 +13,8 @@ Documenter.HTML(
 )
 
 makedocs(
-    sitename="AdaptChebInterp.jl",
-    modules=[AdaptChebInterp],
+    sitename="HChebInterp.jl",
+    modules=[HChebInterp],
     pages = [
         "Home" => "index.md",
         "Manual" => "methods.md",
@@ -22,5 +22,5 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/lxvm/AdaptChebInterp.jl.git",
+    repo = "github.com/lxvm/HChebInterp.jl.git",
 )
