@@ -34,3 +34,4 @@ and is free/open-source software under the MIT license.
 - [FastChebInterp.jl](https://github.com/stevengj/FastChebInterp.jl)
 - [ApproxFun.jl](https://github.com/JuliaApproximation/ApproxFun.jl)
 - [Baobzi](https://github.com/flatironinstitute/baobzi)
+- [TreeFun](https://github.com/danfortunato/treefun)
