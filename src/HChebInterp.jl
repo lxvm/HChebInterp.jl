@@ -5,7 +5,7 @@
 #   refinement one dimension at a time, a la HCubature, and everything in between
 
 """
-A package for h-adaptive Chebyshev interpolation of 1D functions using
+A package for h-adaptive Chebyshev interpolation of N-D functions using
 [`FastChebInterp.jl`](https://github.com/stevengj/FastChebInterp.jl).
 Algorithms based on work by [Kaye et al.](http://arxiv.org/abs/2211.12959).
 See the tests for examples.
@@ -19,45 +19,43 @@ using FastChebInterp: chebpoint, chebpoints, chebinterp, ChebPoly
 
 export hchebinterp, SpectralError, HAdaptError
 
-struct Panel{Td}
-    a::Td # left endpoint
-    b::Td # right endpoint
-    val::Int # if nonzero, index of val in valtree
-    lt::Int # if nonzero, index of left subpanel
-    gt::Int # if nonzero, index of right subpanel
-end
-
-
-struct PanelPoly{T,Td} <: Function
-    valtree::Vector{ChebPoly{1,T,Td}}
-    searchtree::Vector{Panel{Td}}
-    lb::Td
-    ub::Td
+struct TreePoly{N,T,Td} <: Function
+    valtree::Vector{Array{T,N}}
+    funtree::Vector{ChebPoly{N,T,Td}}
+    searchtree::Vector{Vector{Int}}
+    lb::SVector{N,Td}
+    ub::SVector{N,Td}
     initdiv::Int
 end
 
-function (p::PanelPoly{T,Td})(x_) where {T,Td}
-    x = convert(Td, x_)
-    p.lb <= x <= p.ub || throw(ArgumentError("x is outside of the domain"))
-    for i in 1:p.initdiv
-        panel = p.searchtree[i]
-        if panel.a <= x <= panel.b
-            while iszero(panel.val)
-                panel = 2x <= panel.a+panel.b ? p.searchtree[panel.lt] : p.searchtree[panel.gt]
+function indomain(interp::ChebPoly{N}, x::SVector{N,<:Real}) where N
+    x0 = @. (x - interp.lb) * 2 / (interp.ub - interp.lb) - 1
+    all(abs.(x0) .≤ 1)
+end
+
+function (p::TreePoly{N,T,Td})(x_) where {N,T,Td}
+    x = SVector{N,Td}(x_)
+    for i in 1:p.initdiv^N
+        fun = p.funtree[i]
+        children = p.searchtree[i]
+        indomain(fun, x) || continue
+        while true
+            isempty(children) && return fun(x)
+            for c in children
+                indomain(p.funtree[c], x) || continue
+                fun = p.funtree[c]
+                children = p.searchtree[c]
+                break
             end
-            return p.valtree[panel.val](x)
         end
     end
-    error("panel in domain not found")
+    throw(ArgumentError("$x not in domain $(p.lb) to $(p.ub)"))
 end
 
 
-function chebpoints!(p::Vector{Float64}, order::Int, a::Ta, b::Tb) where {Ta,Tb}
-    order_ = (order,)
-    a_ = SVector{1,Ta}(a)
-    b_ = SVector{1,Tb}(b)
-    @inbounds for i in 0:order
-        p[i+1] = chebpoint(CartesianIndex(i), order_, a_, b_)[1]
+function chebpoints!(p::Array{<:SVector{N},N}, order::NTuple{N,Int}, a::SVector{N}, b::SVector{N}) where N
+    for i in CartesianIndices(map(n -> n==0 ? (1:1) : (0:n), order))
+        p[CartesianIndex(i.I .+ 1)] = chebpoint(i,order,a,b) 
     end
     p
 end
@@ -70,17 +68,16 @@ Abstract supertype for error criteria for adaptive refinement.
 abstract type AbstractAdaptCriterion end
 
 """
-    SpectralError(; n=3, abs=abs)
+    SpectralError(; n=3)
 
 Estimate the error of the interpolant by as the sum of the norm of the last `n`
 Chebyshev coefficients. Use `abs` to compute the norm of each coefficient.
 """
-struct SpectralError{A} <: AbstractAdaptCriterion
+struct SpectralError <: AbstractAdaptCriterion
     n::Int
-    abs::A
 end
 
-SpectralError(; n=10, abs=abs) = SpectralError(n, abs)
+SpectralError(; n=3) = SpectralError(n)
 
 """
     HAdaptError(; n=10)
@@ -95,199 +92,169 @@ struct HAdaptError <: AbstractAdaptCriterion
 end
 HAdaptError(; n=10) = HAdaptError(n)
 
+# layer to intercept function evaluation for parallelization
+batcheval(f, x, ::Type) = f.(x)
+batcheval(f, x, ::Type{<:Real}) = f.(only.(x))
+# TODO parallelize all function evaluations in each queue
 
+function evalnext!(nextval, nextfun, criterion::HAdaptError, f, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, Ta) where {n,T,Td}
+    tol = max(atol, rtol*maximum(norm, val))
 
-function hchebinterp_(criterion::HAdaptError, f, a::T, b::T, order, atol, rtol_, norm, maxevals, initdiv) where T
-    npoints = criterion.n
-    rtol = rtol_ == 0 == atol ? sqrt(eps(T)) : rtol_
-    (rtol < 0 || atol < 0) && throw(ArgumentError("invalid negative tolerance"))
-    maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
-    initdiv < 1 && throw(ArgumentError("initdiv must be positive"))
+    a = fun.lb
+    b = fun.ub
+    Δ = (b-a) / 2
 
+    ma = MVector(a)
+    mb = MVector(b)
 
-    # first panel
-    r = range(a, b; length=initdiv+1)
-    lb, ub = r[1], r[2]
-    p = chebpoints(order, lb, ub)
-    fp = f.(p)
-    c = chebinterp(fp, lb, ub)
-    valtree = [c]
-    searchtree = [Panel(r[1],r[2],1,0,0)]
-    numevals = evals_per_panel = order + 1
-
-    # remaining panels
-    for i in 2:initdiv
-        lb, ub = r[i], r[i+1]
-        chebpoints!(p, order, lb, ub)
-        fp .= f.(p)
-        c = chebinterp(fp, lb, ub)
-        push!(valtree, c)
-        push!(searchtree, Panel(r[i],r[i+1],i,0,0))
-        numevals += evals_per_panel
-    end
-
-    nvals = npanels = initdiv
-    val_idx = collect(1:initdiv)
-    val_idx_ = Int[]
-    pan_idx = collect(1:initdiv)
-    pan_idx_ = Int[]
-
-    while true
-        npanels_ = npanels
-        panels = view(searchtree, pan_idx)
-        for (i, (idx, panel)) in enumerate(zip(val_idx, panels))
-            numevals > maxevals && break
-
-            c = valtree[idx]
-            lb = only(c.lb)
-            ub = only(c.ub)
-            mid = (lb+ub)/2
-
-            chebpoints!(p, order, lb, mid)
-            fp .= f.(p)
-            lc = chebinterp(fp, lb, mid)
-            lf = maximum(norm, fp)
-            
-            chebpoints!(p, order, mid, ub)
-            fp .= f.(p)
-            rc = chebinterp(fp, mid, ub)
-            rf = maximum(norm, fp)
-            
-            numevals += 2evals_per_panel
-
-            valtree[idx] = lc
-            push!(valtree, rc)
-            nvals += 1
-            push!(searchtree, Panel(lb, mid, idx, 0, 0))
-            push!(searchtree, Panel(mid, ub, nvals, 0, 0))
-            npanels += 2
-            panels[i] = Panel(panel.a, panel.b, 0, npanels-1, npanels)
-            
-            E = evalhadapterror(c, lc, rc, lb, mid, ub, order, norm, npoints)
-            if E > max(atol, rtol*max(lf, rf))
-                # these lines indicate where the algorithm should refine again
-                push!(val_idx_, idx, nvals)
-                push!(pan_idx_, npanels-1, npanels)
-            else
-                npanels_ += 2
-            end
+    converged = true
+    @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(2), Val{n}())) # Val ntuple loops are unrolled
+        for i = 1:n
+            ma[i] = a[i]+(c[i]-1)*Δ[i]
+            mb[i] = c[i]==2 ? b[i] : a[i]+c[i]*Δ[i]
         end
-        npanels_ == npanels && break
-        resize!(val_idx, length(val_idx_))
-        val_idx .= val_idx_
-        resize!(val_idx_, 0)
-        resize!(pan_idx, length(pan_idx_))
-        pan_idx .= pan_idx_
-        resize!(pan_idx_, 0)
+        x = SVector(ma)
+        y = SVector(mb)
+        # this is shorter and has unrolled loops, but somehow creates a type instability:
+        # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
+        # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
+        push!(nextval, batcheval(f, chebpoints(order, x, y), Ta))
+        push!(nextfun, chebinterp(nextval[end], x, y; tol=droptol))
+
+        # evaluate the error on a dense grid
+        p = Iterators.product(ntuple(m -> range(x[m], y[m], length=order[m]*criterion.n), Val{n}())...)
+        E = maximum(r_ -> (r = SVector{n,Td}(r_); norm(fun(r) - nextfun[end](r))), p)
+        converged &= E < max(tol, rtol*maximum(norm, nextval[end]))
     end
-    PanelPoly(valtree, searchtree, a, b, initdiv)
+    converged
 end
 
-function evalhadapterror(c, lc, rc, a, mid, b, order, norm, npoints)
-    # idea: compare the maximum difference on a dense grid, which fails
-    # when the polynomial degree of the true function is too high
-    E = norm(c(a) - lc(a))
-    for x in range(a, mid; length=npoints*(order+1))
-        x == a && continue
-        E = max(norm(c(x) - lc(x)), E)
+function evalnext!(nextval, nextfun, criterion::SpectralError, f, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, Ta) where {n,T,Td}
+    tol = max(atol, rtol*maximum(norm, val))
+
+    a = fun.lb
+    b = fun.ub
+    Δ = (b-a) / 2
+
+    ma = MVector(a)
+    mb = MVector(b)
+
+    iszero(droptol) || error("nonzero droptol not implemented")
+    dimsconverged = ntuple(Val{n}()) do i
+        # assuming size(fun.coefs) = order
+        idx = CartesianIndices(ntuple(j -> j==i ? (min(criterion.n,size(fun.coefs,i)):size(fun.coefs,i)) : axes(fun.coefs, j), Val{n}()))
+        tol > maximum(sum(norm, @view fun.coefs[idx]; dims=i))
     end
-    for x in range(mid, b; length=npoints*(order+1))
-        x == mid && continue
-        E = max(norm(c(x) - rc(x)), E)
-    end
-    E
-end
-
-
-function hchebinterp_(criterion::SpectralError, f, a::T, b::T, order, atol, rtol_, norm, maxevals, initdiv) where T
-    ncoeffs = criterion.n
-    abs = criterion.abs
-    rtol = rtol_ == 0 == atol ? sqrt(eps(T)) : rtol_
-    (rtol < 0 || atol < 0) && throw(ArgumentError("invalid negative tolerance"))
-    maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
-    initdiv < 1 && throw(ArgumentError("initdiv must be positive"))
-
-
-    # first panel
-    r = range(a, b; length=initdiv+1)
-    lb, ub = r[1], r[2]
-    p = chebpoints(order, lb, ub)
-    fp = f.(p)
-    c = chebinterp(fp, lb, ub)
-    nrmtree = [maximum(norm, fp)]
-    valtree = [c]
-    searchtree = [Panel(r[1],r[2],1,0,0)]
-    numevals = evals_per_panel = order + 1
-
-    # remaining panels
-    for i in 2:initdiv
-        lb, ub = r[i], r[i+1]
-        chebpoints!(p, order, lb, ub)
-        fp .= f.(p)
-        c = chebinterp(fp, lb, ub)
-        push!(valtree, c)
-        push!(nrmtree, maximum(norm, fp))
-        push!(searchtree, Panel(r[i],r[i+1],i,0,0))
-        numevals += evals_per_panel
-    end
-
-    nvals = npanels = initdiv
-    val_idx = collect(1:initdiv)
-    val_idx_ = Int[]
-    panels = view(searchtree, 1:initdiv)
-
-    while true
-        npanels_ = npanels
-        for (i, (idx, panel)) in enumerate(zip(val_idx, panels))
-            numevals > maxevals && break
-            
-            c = valtree[idx]
-            E = evalspectralerror(c, abs, order, ncoeffs)
-
-            if E > max(atol, rtol*nrmtree[idx])
-                
-                lb = only(c.lb)
-                ub = only(c.ub)
-                mid = (lb+ub)/2
-
-                chebpoints!(p, order, lb, mid)
-                fp .= f.(p)
-                valtree[idx] = chebinterp(fp, lb, mid)
-                nrmtree[idx] = maximum(norm, fp)
-
-                chebpoints!(p, order, mid, ub)
-                fp .= f.(p)
-                push!(valtree, chebinterp(fp, mid, ub))
-                push!(nrmtree, maximum(norm, fp))
-                
-                numevals += 2evals_per_panel
-
-                nvals += 1
-                push!(val_idx_, idx, nvals)
-                push!(searchtree, Panel(lb, mid, idx, 0, 0))
-                push!(searchtree, Panel(mid, ub, nvals, 0, 0))
-                panels[i] = Panel(panel.a, panel.b, 0, npanels+1, npanels+2)
-                npanels += 2
-            end
-        end
-        npanels_ == npanels && break
-        resize!(val_idx, length(val_idx_))
-        val_idx .= val_idx_
-        resize!(val_idx_, 0)
-        panels = view(searchtree, (npanels_+1):npanels)
-    end
-    PanelPoly(valtree, searchtree, a, b, initdiv)
-end
-
-
-function evalspectralerror(c::ChebPoly{1}, abs, order, ncoeffs)
-    # idea: compare size (better: rate of decay) of the Chebyshev coefficients
+    #= this is what worked in 1d without the assumption
     n = max(0, ncoeffs + length(c.coefs) - order - 1) # FastChebInterp truncates coefficients under a tolerance
     E = (n-ncoeffs)*eps(abs(c.coefs[end])) # initialize error, possibly offset by truncation
     for i in (order+2-ncoeffs):(order+1-ncoeffs+n)
         E += abs(c.coefs[i])
     end
-    return E
+    =#
+    newsize = map(v -> v ? 1 : 2, dimsconverged)
+    @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(newsize[i]), Val{n}())) # Val ntuple loops are unrolled
+        for i = 1:n
+            ma[i] = a[i]+(c[i]-1)*Δ[i]
+            mb[i] = c[i]==newsize[i] ? b[i] : a[i]+c[i]*Δ[i]
+        end
+        x = SVector(ma)
+        y = SVector(mb)
+        # this is shorter and has unrolled loops, but somehow creates a type instability:
+        # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
+        # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
+        push!(nextval, batcheval(f, chebpoints(order, x, y), Ta))
+        push!(nextfun, chebinterp(nextval[end], x, y; tol=droptol))
+    end
+    all(dimsconverged)
+end
+
+
+function hchebinterp_(criterion::AbstractAdaptCriterion, f, a::T, b::T, order, atol, rtol_, norm, maxevals, initdiv, droptol, Ta) where {n,T<:SVector{n}}
+    rtol = rtol_ == 0 == atol ? sqrt(eps(eltype(T))) : rtol_
+    (rtol < 0 || atol < 0) && throw(ArgumentError("invalid negative tolerance"))
+    maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
+    initdiv < 1 && throw(ArgumentError("initdiv must be positive"))
+
+
+    Δ = (b-a) / initdiv
+    b1 = initdiv == 1 ? b : a+Δ
+    valtree = [batcheval(f, chebpoints(order, a, b1), Ta)]
+    funtree = [chebinterp(valtree[1], a, b1; tol=droptol)]
+    searchtree = [Int[]]
+
+    ma = MVector(a)
+    mb = MVector(b)
+
+    if initdiv > 1 # initial box divided by initdiv along each dimension
+        skip = true # skip the first box, which we already added
+        @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(initdiv), Val{n}())) # Val ntuple loops are unrolled
+            if skip; skip=false; continue; end
+            for i = 1:n
+                ma[i] = a[i]+(c[i]-1)*Δ[i]
+                mb[i] = c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i]
+            end
+            x = SVector(ma)
+            y = SVector(mb)
+            # this is shorter and has unrolled loops, but somehow creates a type instability:
+            # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
+            # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
+            push!(valtree, batcheval(f, chebpoints(order, x, y), Ta))
+            push!(funtree, chebinterp(valtree[end], x, y; tol=droptol))
+            push!(searchtree, Int[])
+        end
+    end
+
+    l = initdiv^length(a)
+    evalsperbox = prod(order)
+
+    queue = Int[]
+    nextqueue = collect(1:l)
+
+    nextval = eltype(valtree)[]
+    nextfun = eltype(funtree)[]
+
+    while !isempty(nextqueue)
+        if l*evalsperbox > maxevals
+            @warn "maxevals exceeded"
+            break
+        end
+
+        copy!(queue, nextqueue)
+        empty!(nextqueue)
+        for i in queue
+            empty!(nextval)
+            empty!(nextfun)
+            converged = evalnext!(nextval, nextfun, criterion, f, valtree[i], funtree[i], order, atol, rtol, norm, droptol, Ta)
+            for (val, fun) in zip(nextval, nextfun)
+                l += 1
+                push!(valtree, val)
+                push!(funtree, fun)
+                push!(searchtree, Int[])
+                push!(searchtree[i], l)
+                !converged && push!(nextqueue, l)
+            end
+        end
+    end
+    TreePoly(valtree, funtree, searchtree, a, b, initdiv)
+end
+
+
+fill_ntuple(e::Union{Number,Val}, N) = ntuple(_ -> e, N)
+fill_ntuple(e::Tuple, _) = e
+fill_ntuple(e::AbstractArray, _) = tuple(e...)
+
+to_svec(a::SVector{n,T}, b::SVector{n,T}) where {n,T<:Real} = (a,b)
+to_svec(a::Tuple{Vararg{Real,n}}, b::Tuple{Vararg{Real,n}}) where n =
+to_svec(SVector{n}(float.(a)), SVector{n}(float.(b)))
+function to_svec(a::AbstractVector{T}, b::AbstractVector{S}) where {T,S}
+    length(a) == length(b) || throw(DimensionMismatch("endpoints $a and $b must have the same length"))
+    F = float(promote_type(T, S))
+    SVector{length(a),F}(a), SVector{length(a),F}(b)
+end
+function to_svec(a::T, b::S) where {T<:Real,S<:Real}
+    F = float(promote_type(T,S))
+    (SVector{1,F}(a), SVector{1,F}(b))
 end
 
 """
@@ -299,9 +266,9 @@ degree `order` that is pointwise accurate to the requested tolerances. Uses
 h-adaptation. If `HAdaptError()` is used as the criterion, it may be appropriate
 to reduce the `order` to 4 to avoid unnecessary function evaluations.
 """
-function hchebinterp(f, a::A, b::B, criterion=SpectralError(); order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1) where {A,B}
-    T = float(promote_type(A, B))
-    hchebinterp_(criterion, f, T(a), T(b), order, atol, rtol, norm, maxevals, initdiv)
+function hchebinterp(f, a_, b_; criterion=SpectralError(), order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1, droptol=0)
+    a, b = to_svec(a_, b_)
+    hchebinterp_(criterion, f, a, b, fill_ntuple(order, length(a_)), atol, rtol, norm, maxevals, initdiv, droptol, typeof(a_))
 end
 
 end

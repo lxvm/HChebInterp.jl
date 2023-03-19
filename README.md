@@ -2,7 +2,7 @@
 
 [Documentation](https://lxvm.github.io/HChebInterp.jl/dev/)
 
-This package provides 1-dimensional h-adaptive Chebyshev interpolation with the
+This package provides multi-dimensional h-adaptive Chebyshev interpolation with the
 routine `hchebinterp`. The routine uses a [Chebyshev
 basis](https://en.wikipedia.org/wiki/Chebyshev_polynomials) to construct a
 piecewise polynomial interpolant of an arbitrary smooth function. It depends on
@@ -21,17 +21,31 @@ p = hchebinterp(f, 0, 1; atol=1e-5)
 Then `p` can be evaluated using its functor interface at any point in the
 interpolation interval, e.g `p(0.5)`.
 
+The same routine also supports interpolation of multidimensional functions,
+though note that the function must accept `SVector` inputs.
+For example, a 2d function can be interpolated as follows:
+```julia
+g(x) = cis(prod(x))
+p = hchebinterp(g, (0,0), (1,1); atol=1e-5)
+```
+with evaluation at points in the support of the interpolant like `p([0.1, 0.4])`.
+
+
 ## Algorithm
 
 The algorithm of `hchebinterp` is based on the one described by [Kaye et
 al., (2023)](http://arxiv.org/abs/2211.12959)
+
+
 ## Author and Copyright
 
 HChebInterp.jl was written by [Lorenzo Van Muñoz](https://web.mit.edu/lxvm/www/),
 and is free/open-source software under the MIT license.
 
+
 ## Related packages
 - [FastChebInterp.jl](https://github.com/stevengj/FastChebInterp.jl)
 - [ApproxFun.jl](https://github.com/JuliaApproximation/ApproxFun.jl)
 - [Baobzi](https://github.com/flatironinstitute/baobzi)
+- [ChebFun](https://github.com/chebfun/chebfun)
 - [TreeFun](https://github.com/danfortunato/treefun)
