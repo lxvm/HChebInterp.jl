@@ -139,19 +139,12 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f, val, fun::Cheb
     ma = MVector(a)
     mb = MVector(b)
 
-    iszero(droptol) || error("nonzero droptol not implemented")
     dimsconverged = ntuple(Val{n}()) do i
         # assuming size(fun.coefs) = order
-        idx = CartesianIndices(ntuple(j -> j==i ? (min(criterion.n,size(fun.coefs,i)):size(fun.coefs,i)) : axes(fun.coefs, j), Val{n}()))
+        idx = CartesianIndices(ntuple(j -> j==i ? (2+order[i]-criterion.n:size(fun.coefs,i)) : axes(fun.coefs, j), Val{n}()))
         tol > maximum(sum(norm, @view fun.coefs[idx]; dims=i))
     end
-    #= this is what worked in 1d without the assumption
-    n = max(0, ncoeffs + length(c.coefs) - order - 1) # FastChebInterp truncates coefficients under a tolerance
-    E = (n-ncoeffs)*eps(abs(c.coefs[end])) # initialize error, possibly offset by truncation
-    for i in (order+2-ncoeffs):(order+1-ncoeffs+n)
-        E += abs(c.coefs[i])
-    end
-    =#
+
     newsize = map(v -> v ? 1 : 2, dimsconverged)
     @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(newsize[i]), Val{n}())) # Val ntuple loops are unrolled
         for i = 1:n
