@@ -28,9 +28,10 @@ struct TreePoly{N,T,Td} <: Function
     initdiv::Int
 end
 
-function indomain(interp::ChebPoly{N}, x::SVector{N,<:Real}) where N
-    x0 = @. (x - interp.lb) * 2 / (interp.ub - interp.lb) - 1
-    all(abs.(x0) .≤ 1)
+@generated function indomain(interp::ChebPoly{N}, x::SVector{N,<:Real}) where N
+    :(@inbounds Base.Cartesian.@nall $N d -> (interp.lb[d] <= x[d] <= interp.ub[d]))
+    # x0 = @. (x - interp.lb) * 2 / (interp.ub - interp.lb) - 1
+    # all(abs.(x0) .≤ 1)
 end
 
 function (p::TreePoly{N,T,Td})(x_) where {N,T,Td}
