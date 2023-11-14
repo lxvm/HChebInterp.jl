@@ -12,7 +12,7 @@ Aqua.test_all(HChebInterp, project_toml_formatting=false)
             # pick the unit interval for interpolation
             for n in 1:2, initdiv in [1, 3, 5]
                 atol = rtol = 1e-3
-                a, b = fill(0,n), fill(1,n)
+                a, b = fill(0.0,n), fill(1.0,n)
                 # choose some functions to interpolate
                 f1(x) = sin(exp(sum(abs2.(x))))
                 f2(x) = exp(-sum(y ->sin(10y), x)^2)
