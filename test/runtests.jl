@@ -1,6 +1,10 @@
 using Test
 using HChebInterp
 
+using Aqua
+
+Aqua.test_all(HChebInterp, project_toml_formatting=false)
+
 @testset "HChebInterp" begin
     ninterp = 2000
     for (criterion, order) in ((SpectralError(), 15), (HAdaptError(), 6))
@@ -19,14 +23,14 @@ using HChebInterp
                     x = Iterators.product(ntuple(m -> range(a[m], b[m], length=ninterp), n)...)
                     # check for pointwise (Linf) accuracy to atol
                     @test maximum(y -> HChebInterp.norm(f(y) - p(y)), x) < atol
-                    
+
                     # # construct interpolant and specify rtol
                     p = hchebinterp(f, a, b; criterion=criterion, order=order, rtol=rtol)
                     # check interpolation error is lower than default tolerance
                     x = range(a, b, length=2000)
                     # check for global (L2) accuracy to 2*rtol, since function decays
                     @test maximum(y -> HChebInterp.norm(f(y) - p(y))/HChebInterp.norm(f(y)), x) < 2rtol
-                    
+
                     # check out of bounds evaluation fails
                     @test_throws ArgumentError p(2b)
                 end
