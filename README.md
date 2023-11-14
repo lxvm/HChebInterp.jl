@@ -1,6 +1,9 @@
 # HChebInterp.jl
 
-[Documentation](https://lxvm.github.io/HChebInterp.jl/dev/)
+| Documentation | Build Status | Coverage | Version |
+| :-: | :-: | :-: | :-: |
+| [![][docs-stable-img]][docs-stable-url] | [![][action-img]][action-url] | [![][codecov-img]][codecov-url] | [![ver-img]][ver-url] |
+| [![][docs-dev-img]][docs-dev-url] | [![][pkgeval-img]][pkgeval-url] | [![][aqua-img]][aqua-url] | [![deps-img]][deps-url] |
 
 This package provides multi-dimensional h-adaptive Chebyshev interpolation with the
 routine `hchebinterp`. The routine uses a [Chebyshev
@@ -49,3 +52,29 @@ and is free/open-source software under the MIT license.
 - [Baobzi](https://github.com/flatironinstitute/baobzi)
 - [ChebFun](https://github.com/chebfun/chebfun)
 - [TreeFun](https://github.com/danfortunato/treefun)
+
+<!-- badges -->
+
+[docs-stable-img]: https://img.shields.io/badge/docs-stable-blue.svg
+[docs-stable-url]: https://lxvm.github.io/HChebInterp.jl/stable/
+
+[docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
+[docs-dev-url]: https://lxvm.github.io/HChebInterp.jl/dev/
+
+[action-img]: https://github.com/lxvm/HChebInterp.jl/actions/workflows/CI.yml/badge.svg?branch=main
+[action-url]: https://github.com/lxvm/HChebInterp.jl/actions/?query=workflow:CI
+
+[pkgeval-img]: https://juliahub.com/docs/General/HChebInterp/stable/pkgeval.svg
+[pkgeval-url]: https://juliahub.com/ui/Packages/General/HChebInterp
+
+[codecov-img]: https://codecov.io/github/lxvm/HChebInterp.jl/branch/main/graph/badge.svg
+[codecov-url]: https://app.codecov.io/github/lxvm/HChebInterp.jl
+
+[aqua-img]: https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg
+[aqua-url]: https://github.com/JuliaTesting/Aqua.jl
+
+[ver-img]: https://juliahub.com/docs/HChebInterp/version.svg
+[ver-url]: https://juliahub.com/ui/Packages/HChebInterp/UDEDl
+
+[deps-img]: https://juliahub.com/docs/General/HChebInterp/stable/deps.svg
+[deps-url]: https://juliahub.com/ui/Packages/General/HChebInterp?t=2
