@@ -3,7 +3,7 @@ using HChebInterp
 
 using Aqua
 
-Aqua.test_all(HChebInterp, project_toml_formatting=false)
+Aqua.test_all(HChebInterp)
 
 @testset "HChebInterp" begin
     ninterp = 2000
