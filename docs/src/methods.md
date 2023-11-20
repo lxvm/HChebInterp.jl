@@ -22,7 +22,3 @@ f = x -> cis(x^2)
 b = BatchFunction(x -> f.(x))
 p = hchebinterp(b, 0.0, 4.0)
 ```
-
-```@docs
-HChebInterp.BatchFunction
-```
