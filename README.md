@@ -33,6 +33,9 @@ p = hchebinterp(g, (0,0), (1,1); atol=1e-5)
 ```
 with evaluation at points in the support of the interpolant like `p([0.1, 0.4])`.
 
+The package can interpolate any numeric or array-valued types.
+It also supports a batching interface.
+See the documentation linked above for details.
 
 ## Algorithm
 
