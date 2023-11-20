@@ -5,7 +5,7 @@ using Aqua
 
 Aqua.test_all(HChebInterp)
 
-@testset "HChebInterp" include("interp.jl")
-@testset "batch" include("batch.jl")
-@testset "precision" include("precision.jl")
-@testset "units" include("units.jl")
+@testset "HChebInterp" begin include("interp.jl") end
+@testset "batch" begin include("batch.jl") end
+@testset "precision" begin include("precision.jl") end
+@testset "units" begin include("units.jl") end
