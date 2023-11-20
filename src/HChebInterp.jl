@@ -17,7 +17,7 @@ using LinearAlgebra
 using StaticArrays
 using FastChebInterp: chebpoint, chebpoints, chebinterp, ChebPoly
 
-export hchebinterp, SpectralError, HAdaptError
+export hchebinterp, SpectralError, HAdaptError, BatchFunction
 
 struct TreePoly{N,V,T,Td} <: Function
     valtree::Vector{Array{V,N}}
@@ -330,7 +330,7 @@ function hchebinterp(f, ua_, ub_; criterion=SpectralError(), order=15, atol=noth
     ub = ub_ isa Number ? T(ub_) : SVector{length(ub_),T}(ub_)
     g = if f isa BatchFunction
         if isnothing(f.x)
-            x = Array{typeof(ua),length(ord)}(undef, ord)
+            x = Array{typeof(ua),length(ord)}(undef, ord .+ 1)
             BatchFunction(t -> f.f(x .= u .* t), x)
         else
             @assert size(f.x) == ord .+ 1
