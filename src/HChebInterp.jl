@@ -322,14 +322,10 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criteri
     e = ones(SVector{n,typeof(one(T))})
     t2x = t -> a + s * (e + t)
     ord = fill_ntuple(order, n)
-    ts = Array{typeof(e),n}(undef, ord .+ 1)
-    g = if isnothing(f.x)
-        x = similar(ts, typeof(a))
-        BatchFunction(t -> f.f(map!(t2x, x, t)), ts)
-    else
-        @assert size(f.x) == size(ts)
-        BatchFunction(t -> f.f(map!(t2x, f.x, t)), ts)
-    end
+    t = Array{typeof(e),n}(undef, ord .+ 1)
+    x = isnothing(f.x) ? similar(t, typeof(a)) : f.x
+    @assert size(x) == size(ts)
+    g = BatchFunction(t -> f.f(map!(t2x, x, t)), t)
     p = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol)
     return TreePoly(p.valtree, p.funtree, p.searchtree, a, b, p.initdiv)
 end
@@ -339,7 +335,7 @@ function hchebinterp(f, a, b; kws...)
     T = float(promote_type(eltype(a),eltype(b)))
     g = if a isa Number
         if f isa BatchFunction
-            BatchFunction(x -> f.f(reinterpret(T, x)), reinterpret(SVector{n,T}, f.x))
+            BatchFunction(x -> f.f(reinterpret(T, x)), isnothing(f.x) ? f.x : reinterpret(SVector{n,T}, f.x))
         else
             BatchFunction(x -> f.(reinterpret(T, x)))
         end
