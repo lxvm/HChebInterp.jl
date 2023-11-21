@@ -39,8 +39,8 @@ end
 
 # x = a + (1+t)*(b-a)/2, t∈[-1,1]
 # t = (x-a)*2/(b-a) - 1, x∈[a,b]
-function (p::TreePoly{N,T,V,Td,Tx})(x) where {N,T,V,Td,Tx}
-    t = map((a, b, x) -> (x-a)*2/(b-a)-1, p.lb, p.ub, SVector{N,Tx}(x))
+function (p::TreePoly{N,T,V,Td,Tx})(x::SVector{N,Tx}) where {N,T,V,Td,Tx}
+    t = map((a, b, x) -> (x-a)*2/(b-a)-1, p.lb, p.ub, x)
     for i in 1:p.initdiv^N
         fun = p.funtree[i]
         children = p.searchtree[i]
@@ -57,6 +57,7 @@ function (p::TreePoly{N,T,V,Td,Tx})(x) where {N,T,V,Td,Tx}
     end
     throw(ArgumentError("$x not in domain $(p.lb) to $(p.ub)"))
 end
+(p::TreePoly{N,T,V,Td,Tx})(x) where {N,T,V,Td,Tx} = p(SVector{N,Tx}(x))
 
 # chebpoint does not use precision of endpoints in current release v1.2
 function _chebpoint(i::CartesianIndex{N}, order::NTuple{N,Int}, lb::SVector{N}, ub::SVector{N}) where {N}
