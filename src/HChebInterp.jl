@@ -328,7 +328,7 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criteri
         BatchFunction(t -> f.f(map!(t2x, x, t)), ts)
     else
         @assert size(f.x) == size(ts)
-        BatchFunction(t -> f.f(map!(t2x, reinterpret(SVector{n,T}, f.x), t)), ts)
+        BatchFunction(t -> f.f(map!(t2x, f.x, t)), ts)
     end
     p = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol)
     return TreePoly(p.valtree, p.funtree, p.searchtree, a, b, p.initdiv)
@@ -339,7 +339,7 @@ function hchebinterp(f, a, b; kws...)
     T = float(promote_type(eltype(a),eltype(b)))
     g = if a isa Number
         if f isa BatchFunction
-            BatchFunction(x -> f.f(reinterpret(T, x)), f.x)
+            BatchFunction(x -> f.f(reinterpret(T, x)), reinterpret(SVector{n,T}, f.x))
         else
             BatchFunction(x -> f.(reinterpret(T, x)))
         end
