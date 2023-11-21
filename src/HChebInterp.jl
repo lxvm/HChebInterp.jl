@@ -19,20 +19,15 @@ using FastChebInterp: chebpoint, chebpoints, chebinterp, ChebPoly
 
 export hchebinterp, SpectralError, HAdaptError, BatchFunction
 
-struct TreePoly{N,V,T,Td} <: Function
+struct TreePoly{N,V,T,Td,Tx} <: Function
     valtree::Vector{Array{V,N}}
     funtree::Vector{ChebPoly{N,T,Td}}
     searchtree::Vector{Vector{Int}}
-    lb::SVector{N,Td}
-    ub::SVector{N,Td}
+    lb::SVector{N,Tx}
+    ub::SVector{N,Tx}
     initdiv::Int
 end
 
-# @generated function indomain(interp::ChebPoly{N}, x::SVector{N}) where N
-#     :(@inbounds Base.Cartesian.@nall $N d -> (interp.lb[d] <= x[d] <= interp.ub[d]))
-#     # x0 = @. (x - interp.lb) * 2 / (interp.ub - interp.lb) - 1
-#     # all(abs.(x0) .≤ 1)
-# end
 _indomain(lb::T, ub::T, x::T) where {T<:SVector{1}} = lb[1] <= x[1] <= ub[1]
 function _indomain(lb::T, ub::T, x::T) where {N,T<:SVector{N}}
     return (lb[N] <= x[N] <= ub[N]) && _indomain(pop(lb), pop(ub), pop(x))
@@ -42,16 +37,18 @@ function indomain(interp::ChebPoly{N}, x::SVector{N}) where {N}
     return _indomain(interp.lb, interp.ub, x)
 end
 
-function (p::TreePoly{N,T,V,Td})(ux) where {N,T,V,Td}
-    x = SVector{N,Td}(map(x -> x/oneunit(x),ux))
+# x = a + (1+t)*(b-a)/2, t∈[-1,1]
+# t = (x-a)*2/(b-a) - 1, x∈[a,b]
+function (p::TreePoly{N,T,V,Td,Tx})(x) where {N,T,V,Td,Tx}
+    t = map((a, b, x) -> (x-a)*2/(b-a)-1, p.lb, p.ub, SVector{N,Tx}(x))
     for i in 1:p.initdiv^N
         fun = p.funtree[i]
         children = p.searchtree[i]
-        indomain(fun, x) || continue
+        indomain(fun, t) || continue
         while true
-            isempty(children) && return convert(V, fun(x))
+            isempty(children) && return convert(V, fun(t))
             for c in children
-                indomain(p.funtree[c], x) || continue
+                indomain(p.funtree[c], t) || continue
                 fun = p.funtree[c]
                 children = p.searchtree[c]
                 break
@@ -145,13 +142,11 @@ Wrapper for an out-of-place function of the form `f.(x)`.
 Optionally provide a buffer `x` to store the input points of the right shape, namely
 `all(size(x) .+ 1 .== order)`
 """
-struct BatchFunction{F,X,T}
+struct BatchFunction{F,X}
     f::F
     x::X
-    t::T
 end
-BatchFunction(f) = BatchFunction(f, nothing, nothing)
-BatchFunction(f, x) = BatchFunction(f, x, x / oneunit(eltype(eltype(x))))
+BatchFunction(f) = BatchFunction(f, nothing)
 
 _oftype(y, x) = oftype(y, x)
 _oftype(y::T, x::MVector{1,T}) where {T} = oftype(y, only(x))
@@ -177,7 +172,7 @@ function evalnext!(nextval, nextfun, criterion::HAdaptError, f::BatchFunction, l
         # this is shorter and has unrolled loops, but somehow creates a type instability:
         # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
         # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
-        push!(nextval, f.f(chebpoints!(f.t, order, x, y)))
+        push!(nextval, f.f(chebpoints!(f.x, order, x, y)))
         push!(nextfun, _chebinterp(nextval[end], x, y; tol=droptol))
 
         # evaluate the error on a dense grid
@@ -215,7 +210,7 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction,
         # this is shorter and has unrolled loops, but somehow creates a type instability:
         # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
         # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
-        push!(nextval, f.f(chebpoints!(f.t, order, x, y)))
+        push!(nextval, f.f(chebpoints!(f.x, order, x, y)))
         push!(nextfun, _chebinterp(nextval[end], x, y; tol=droptol))
     end
     all(dimsconverged)
@@ -229,7 +224,7 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
 
     Δ = (b-a) / initdiv
     b1 = initdiv == 1 ? b : a+Δ
-    valtree = [f.f(chebpoints!(f.t, order, a, b))]
+    valtree = [f.f(chebpoints!(f.x, order, a, b))]
     funtree = [_chebinterp(valtree[1], a, b1; tol=droptol)]
     searchtree = [Int[]]
 
@@ -253,7 +248,7 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
             # this is shorter and has unrolled loops, but somehow creates a type instability:
             # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
             # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
-            push!(valtree, f.f(chebpoints!(f.t, order, x, y)))
+            push!(valtree, f.f(chebpoints!(f.x, order, x, y)))
             push!(funtree, _chebinterp(valtree[end], x, y; tol=droptol))
             push!(searchtree, Int[])
         end
@@ -320,29 +315,37 @@ degree `order` that is pointwise accurate to the requested tolerances. Uses
 h-adaptation. If `HAdaptError()` is used as the criterion, it may be appropriate
 to reduce the `order` to 4 to avoid unnecessary function evaluations.
 """
-function hchebinterp(f, ua_, ub_; criterion=SpectralError(), order=15, atol=nothing, rtol=nothing, norm=norm, maxevals=typemax(Int), initdiv=1, droptol=0)
-    (n = length(ua_)) == length(ub_) || throw(ArgumentError("a and b must be the same length"))
-    ord = fill_ntuple(order, length(ua_))
-    T = float(promote_type(eltype(ua_),eltype(ub_)))
-    u = oneunit(T)
+function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criterion=SpectralError(), order=15, atol=nothing, rtol=nothing, norm=norm, maxevals=typemax(Int), initdiv=1, droptol=0) where {n,T}
     @assert one(T) isa Real "a and b must be real vectors"
-    ua = ua_ isa Number ? T(ua_) : SVector{length(ua_),T}(ua_)
-    ub = ub_ isa Number ? T(ub_) : SVector{length(ub_),T}(ub_)
-    g = if f isa BatchFunction
-        if isnothing(f.x)
-            x = Array{typeof(ua),length(ord)}(undef, ord .+ 1)
-            BatchFunction(t -> f.f(x .= u .* t), x)
+    s = Diagonal((b-a)/2)
+    e = ones(SVector{n,typeof(one(T))})
+    t2x = t -> a + s * (e + t)
+    ord = fill_ntuple(order, n)
+    ts = Array{typeof(e),n}(undef, ord .+ 1)
+    g = if isnothing(f.x)
+        x = similar(ts, typeof(a))
+        BatchFunction(t -> f.f(map!(t2x, x, t)), ts)
+    else
+        @assert size(f.x) == size(ts)
+        BatchFunction(t -> f.f(map!(t2x, reinterpret(SVector{n,T}, f.x), t)), ts)
+    end
+    p = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol)
+    return TreePoly(p.valtree, p.funtree, p.searchtree, a, b, p.initdiv)
+end
+
+function hchebinterp(f, a, b; kws...)
+    (n = length(a)) == length(b) || throw(ArgumentError("a and b must be the same length"))
+    T = float(promote_type(eltype(a),eltype(b)))
+    g = if a isa Number
+        if f isa BatchFunction
+            BatchFunction(x -> f.f(reinterpret(T, x)), f.x)
         else
-            @assert size(f.x) == ord .+ 1
-            BatchFunction(t -> f.f(f.x .= u .* t), f.x, f.t)
+            BatchFunction(x -> f.(reinterpret(T, x)))
         end
     else
-        x = Array{typeof(ua),length(ord)}(undef, ord .+ 1)
-        BatchFunction(t -> f.(x .= u .* t), x)
+        f isa BatchFunction ? f : BatchFunction(x -> f.(x))
     end
-    a = map(x -> x/oneunit(x), ua)
-    b = map(x -> x/oneunit(x), ub)
-    hchebinterp_(criterion, g, a, b, ord, atol, rtol, norm, maxevals, initdiv, droptol)
+    return hchebinterp(g, SVector{n,T}(a), SVector{n,T}(b); kws...)
 end
 
 end

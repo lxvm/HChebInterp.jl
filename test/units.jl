@@ -1,9 +1,10 @@
-using Test, Unitful, HChebInterp
+using Test, Unitful, HChebInterp, StaticArrays
 
 f1 = x -> x^3 - sin(x)
 uf1 = x -> f1(x/oneunit(x))
 fun1 = hchebinterp(uf1, 0.0u"m", 1.0u"m")
 @test uf1(0.5u"m") ≈ fun1(0.5u"m")
+@test uf1(0.5u"m") ≈ fun1(5e5u"μm")
 
 u2f1 = x -> u"s"*uf1(x)
 fun2 = hchebinterp(u2f1, 0.0u"m", 1.0u"m")
