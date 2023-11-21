@@ -1,7 +1,7 @@
 name = "HChebInterp"
 uuid = "78faba9b-a54b-441f-8118-62407cbe4e59"
 authors = ["lxvm <lorenzo@vanmunoz.com>"]
-version = "1.0.0"
+version = "1.0.1"
 
 [deps]
 FastChebInterp = "cf66c380-9a80-432c-aff8-4f9c79c0bdde"
