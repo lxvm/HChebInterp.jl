@@ -324,7 +324,7 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criteri
     ord = fill_ntuple(order, n)
     t = Array{typeof(e),n}(undef, ord .+ 1)
     x = isnothing(f.x) ? similar(t, typeof(a)) : f.x
-    @assert size(x) == size(ts)
+    @assert size(x) == size(t)
     g = BatchFunction(t -> f.f(map!(t2x, x, t)), t)
     p = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol)
     return TreePoly(p.valtree, p.funtree, p.searchtree, a, b, p.initdiv)
