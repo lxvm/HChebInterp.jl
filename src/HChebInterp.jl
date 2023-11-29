@@ -194,13 +194,20 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction,
     ma = MVector(a)
     mb = MVector(b)
 
-    dimsconverged = ntuple(Val{n}()) do i
-        # assuming size(fun.coefs) = order
-        idx = CartesianIndices(ntuple(j -> j==i ? (2+order[i]-criterion.n:size(fun.coefs,i)) : axes(fun.coefs, j), Val{n}()))
-        tol > maximum(sum(norm, @view fun.coefs[idx]; dims=i))
+    # we need this to obtain at least first order accuracy
+    @assert minimum(order) > criterion.n
+
+    aredimsconverged = fun_ -> begin
+        ntuple(Val{n}()) do i
+            # assuming size(fun.coefs) = order
+            idx = CartesianIndices(ntuple(j -> j==i ? (2+order[i]-criterion.n:size(fun_.coefs,i)) : axes(fun_.coefs, j), Val{n}()))
+            tol > maximum(sum(norm, @view(fun_.coefs[idx]); dims=i))
+        end
     end
+    dimsconverged = aredimsconverged(fun)
 
     newsize = map(v -> v ? 1 : 2, dimsconverged)
+    converged = true
     @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(newsize[i]), Val{n}())) # Val ntuple loops are unrolled
         for i = 1:n
             ma[i] = a[i]+(c[i]-1)*Δ[i]
@@ -213,8 +220,9 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction,
         # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
         push!(nextval, f.f(chebpoints!(f.x, order, x, y)))
         push!(nextfun, _chebinterp(nextval[end], x, y; tol=droptol))
+        converged &= all(aredimsconverged(nextfun[end]))
     end
-    all(dimsconverged)
+    converged
 end
 
 
