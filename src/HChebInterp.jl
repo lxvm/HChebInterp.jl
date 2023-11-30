@@ -80,7 +80,7 @@ function _chebinterp(data::AbstractArray{<:Number}, args...; kws...)
 end
 function _chebinterp(data::AbstractArray{<:SVector}, args...; kws...)
     u = oneunit(eltype(eltype(data)))
-    chebinterp(data/u, args...; kws...)
+    c = chebinterp(data/u, args...; kws...)
     return ChebPoly(u*c.coefs, c.lb, c.ub)
 end
 function _chebinterp(data::AbstractArray{<:SArray}, args...; kws...)
