@@ -26,3 +26,8 @@ for ndim in 1:2
     end
 end
 
+# interpolant requiring two subdivisions, asymmetrically
+for (criterion, numpanels) in ((HAdaptError(), 1+2+4+4), (SpectralError(), 1+2+2)), order in [4, 10]
+    fun, numevals = hchebinterp_count(x -> min(1, abs(x)), -3, 1, order=order, criterion=criterion)
+    @test numevals == numpanels*(order+1)
+end

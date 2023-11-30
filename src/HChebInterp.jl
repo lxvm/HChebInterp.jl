@@ -181,7 +181,7 @@ function evalnext!(nextval, nextfun, criterion::HAdaptError, f::BatchFunction, l
         E = maximum(r_ -> (r = SVector{n,Td}(r_); norm(fun(r) - nextfun[end](r))), p)
         converged &= E < max(tol, rtol*maximum(norm, nextval[end]))
     end
-    converged
+    fill(converged, length(nextval))
 end
 
 function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction, lb,ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol) where {n,T,Td}
@@ -207,7 +207,7 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction,
     dimsconverged = aredimsconverged(fun)
 
     newsize = map(v -> v ? 1 : 2, dimsconverged)
-    converged = true
+    converged = Bool[]
     @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(newsize[i]), Val{n}())) # Val ntuple loops are unrolled
         for i = 1:n
             ma[i] = a[i]+(c[i]-1)*Δ[i]
@@ -220,7 +220,7 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction,
         # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
         push!(nextval, f.f(chebpoints!(f.x, order, x, y)))
         push!(nextfun, _chebinterp(nextval[end], x, y; tol=droptol))
-        converged &= all(aredimsconverged(nextfun[end]))
+        push!(converged, all(aredimsconverged(nextfun[end])))
     end
     converged
 end
@@ -284,13 +284,13 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
             empty!(nextval)
             empty!(nextfun)
             converged = evalnext!(nextval, nextfun, criterion, f, a,b, valtree[i], funtree[i], order, atol, rtol, norm, droptol)
-            for (val, fun) in zip(nextval, nextfun)
+            for (val, fun, con) in zip(nextval, nextfun, converged)
                 l += 1
                 push!(valtree, val)
                 push!(funtree, fun)
                 push!(searchtree, Int[])
                 push!(searchtree[i], l)
-                !converged && push!(nextqueue, l)
+                !con && push!(nextqueue, l)
             end
         end
     end
