@@ -139,20 +139,21 @@ HAdaptError(; n=10) = HAdaptError(n)
 """
     BatchFunction(f, [x])
 
-Wrapper for an out-of-place function of the form `f.(x)`.
-Optionally provide a buffer `x` to store the input points of the right shape, namely
-`all(size(x) .+ 1 .== order)`
+Wrapper for an out-of-place function of the form `f.(x)`, where the input `x`
+will be a vector with a similar element type to the input domain.
+Optionally provide a resizeable vector `x` to store the input points.
 """
-struct BatchFunction{F,X}
+struct BatchFunction{F,X<:AbstractVector}
     f::F
     x::X
 end
-BatchFunction(f) = BatchFunction(f, nothing)
+BatchFunction(f) = BatchFunction(f, Nothing[])
+BatchFunction(f, x::AbstractArray) = BatchFunction(f, similar(x, length(x)))
 
 _oftype(y, x) = oftype(y, x)
 _oftype(y::T, x::MVector{1,T}) where {T} = oftype(y, only(x))
 
-function evalnext!(nextval, nextfun, criterion::HAdaptError, f::BatchFunction, lb, ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol) where {n,T,Td}
+function evalnext!(t, valtree, funtree, searchtree, criterion::HAdaptError, f::BatchFunction, lb, ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, initdiv) where {n,T,Td}
     tol = max(atol, rtol*maximum(norm, val))
 
     a = fun.lb
@@ -163,6 +164,7 @@ function evalnext!(nextval, nextfun, criterion::HAdaptError, f::BatchFunction, l
     mb = MVector(b)
 
     converged = true
+    len = 0
     @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(2), Val{n}())) # Val ntuple loops are unrolled
         for i = 1:n
             ma[i] = a[i]+(c[i]-1)*Δ[i]
@@ -170,21 +172,24 @@ function evalnext!(nextval, nextfun, criterion::HAdaptError, f::BatchFunction, l
         end
         x = _oftype(lb, ma)
         y = _oftype(ub, mb)
-        # this is shorter and has unrolled loops, but somehow creates a type instability:
-        # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
-        # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
-        push!(nextval, f.f(chebpoints!(f.x, order, x, y)))
-        push!(nextfun, _chebinterp(nextval[end], x, y; tol=droptol))
 
+        chebpoints!(t, order, x, y)
+        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv)
+        nextfun = _chebinterp(nextval, x, y; tol=droptol)
+        push!(valtree, nextval)
+        push!(funtree, nextfun)
+        push!(searchtree, Int[])
+
+        len += 1
         # evaluate the error on a dense grid
         p = Iterators.product(ntuple(m -> range(x[m], y[m], length=order[m]*criterion.n), Val{n}())...)
-        E = maximum(r_ -> (r = SVector{n,Td}(r_); norm(fun(r) - nextfun[end](r))), p)
-        converged &= E < max(tol, rtol*maximum(norm, nextval[end]))
+        E = maximum(r_ -> (r = SVector{n,Td}(r_); norm(fun(r) - nextfun(r))), p)
+        converged &= E < max(tol, rtol*maximum(norm, nextval))
     end
-    fill(converged, length(nextval))
+    fill(converged, len)
 end
 
-function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction, lb,ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol) where {n,T,Td}
+function evalnext!(t, valtree, funtree, searchtree, criterion::SpectralError, f::BatchFunction, lb,ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, initdiv) where {n,T,Td}
     tol = max(atol, rtol*maximum(norm, val))
 
     a = fun.lb
@@ -204,10 +209,11 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction,
             tol > maximum(sum(norm, @view(fun_.coefs[idx]); dims=i))
         end
     end
+    converged = Bool[]
     dimsconverged = aredimsconverged(fun)
+    all(dimsconverged) && return converged
 
     newsize = map(v -> v ? 1 : 2, dimsconverged)
-    converged = Bool[]
     @inbounds for c in CartesianIndices(ntuple(i->Base.OneTo(newsize[i]), Val{n}())) # Val ntuple loops are unrolled
         for i = 1:n
             ma[i] = a[i]+(c[i]-1)*Δ[i]
@@ -215,16 +221,67 @@ function evalnext!(nextval, nextfun, criterion::SpectralError, f::BatchFunction,
         end
         x = _oftype(lb, ma)
         y = _oftype(ub, mb)
-        # this is shorter and has unrolled loops, but somehow creates a type instability:
-        # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
-        # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
-        push!(nextval, f.f(chebpoints!(f.x, order, x, y)))
-        push!(nextfun, _chebinterp(nextval[end], x, y; tol=droptol))
-        push!(converged, all(aredimsconverged(nextfun[end])))
+        # @show x,y
+        chebpoints!(t, order, x, y)
+        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv)
+        nextfun = _chebinterp(nextval, x, y; tol=droptol)
+        push!(valtree, nextval)
+        push!(funtree, nextfun)
+        push!(searchtree, Int[])
+
+        push!(converged, all(aredimsconverged(nextfun)))
     end
     converged
 end
 
+# this function does batch evaluation while reusing already evaluated points
+function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, initdiv)
+    vals = similar(first(valtree))
+    idx = typeof(first(CartesianIndices(t)))[]
+    empty!(x)
+    for i in CartesianIndices(t)
+        ti = t[i]
+        next = findevaluated(ti, CartesianIndices(axes(t)), valtree, funtree, searchtree, order, initdiv)
+        if isnothing(next)
+            push!(x, ti)
+            push!(idx, i)
+        else
+            vals[i] = next
+        end
+    end
+    vals[idx] .= f(x)
+    return vals
+end
+
+function findevaluated(x, ind, valtree, funtree, searchtree, order, initdiv)
+    tol = 10*eps(one(eltype(x)))
+    for i in 1:min(initdiv^length(x), length(funtree))
+        val = valtree[i]
+        fun = funtree[i]
+        children = searchtree[i]
+        indomain(fun, x) || continue
+        while true
+            # this search will be expensive
+            next = findfirst(ind) do idx
+                norm(_chebpoint(idx - oneunit(idx), order, fun.lb, fun.ub) - x) < tol
+            end
+            if !isnothing(next)
+                # @show x next ind val[ind[next]]
+                return val[ind[next]]
+            elseif isempty(children)
+                return nothing
+            else
+                for c in children
+                    indomain(funtree[c], x) || continue
+                    val = valtree[c]
+                    fun = funtree[c]
+                    children = searchtree[c]
+                    break
+                end
+            end
+        end
+    end
+end
 
 function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b, order, atol_, rtol_, norm, maxevals, initdiv, droptol)
     maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
@@ -233,7 +290,11 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
 
     Δ = (b-a) / initdiv
     b1 = initdiv == 1 ? b : a+Δ
-    valtree = [f.f(chebpoints!(f.x, order, a, b))]
+    t = Array{typeof(a),length(a)}(undef, order .+ 1)
+    chebpoints!(t, order, a, b1)
+    resize!(f.x, length(t))
+    f.x .= vec(t)
+    valtree = [Array(reshape(f.f(f.x), size(t)))]
     funtree = [_chebinterp(valtree[1], a, b1; tol=droptol)]
     searchtree = [Int[]]
 
@@ -254,11 +315,11 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
             end
             x = _oftype(a, ma)
             y = _oftype(b, mb)
-            # this is shorter and has unrolled loops, but somehow creates a type instability:
-            # x = SVector(ntuple(i -> a[i]+(c[i]-1)*Δ[i], Val{n}()))
-            # y = SVector(ntuple(i -> c[i]==initdiv ? b[i] : a[i]+c[i]*Δ[i], Val{n}()))
-            push!(valtree, f.f(chebpoints!(f.x, order, x, y)))
-            push!(funtree, _chebinterp(valtree[end], x, y; tol=droptol))
+
+            chebpoints!(t, order, x, y)
+            vals = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv)
+            push!(valtree, vals)
+            push!(funtree, _chebinterp(vals, x, y; tol=droptol))
             push!(searchtree, Int[])
         end
     end
@@ -269,9 +330,6 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     queue = Int[]
     nextqueue = collect(1:l)
 
-    nextval = eltype(valtree)[]
-    nextfun = eltype(funtree)[]
-
     while !isempty(nextqueue)
         if l*evalsperbox > maxevals
             @warn "maxevals exceeded"
@@ -281,20 +339,13 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
         copy!(queue, nextqueue)
         empty!(nextqueue)
         for i in queue
-            empty!(nextval)
-            empty!(nextfun)
-            converged = evalnext!(nextval, nextfun, criterion, f, a,b, valtree[i], funtree[i], order, atol, rtol, norm, droptol)
-            for (val, fun, con) in zip(nextval, nextfun, converged)
-                l += 1
-                push!(valtree, val)
-                push!(funtree, fun)
-                push!(searchtree, Int[])
-                push!(searchtree[i], l)
-                !con && push!(nextqueue, l)
+            for converged in evalnext!(t, valtree, funtree, searchtree, criterion, f, a,b, valtree[i], funtree[i], order, atol, rtol, norm, droptol, initdiv)
+                push!(searchtree[i], l += 1)
+                !converged && push!(nextqueue, l)
             end
         end
     end
-    TreePoly(valtree, funtree, searchtree, a isa Number ? SVector(a) : a, b isa Number ? SVector(b) : b, initdiv)
+    return valtree, funtree, searchtree
 end
 
 
@@ -329,13 +380,14 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criteri
     s = Diagonal((b-a)/2)
     e = ones(SVector{n,typeof(one(T))})
     t2x = t -> a + s * (e + t)
+    x = eltype(f.x) <: Nothing ? typeof(a)[] : f.x
+    g = BatchFunction(typeof(e)[]) do t
+        resize!(parent(x), length(t))
+        f.f(map!(t2x, x, t))
+    end
     ord = fill_ntuple(order, n)
-    t = Array{typeof(e),n}(undef, ord .+ 1)
-    x = isnothing(f.x) ? similar(t, typeof(a)) : f.x
-    @assert size(x) == size(t)
-    g = BatchFunction(t -> f.f(map!(t2x, x, t)), t)
-    p = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol)
-    return TreePoly(p.valtree, p.funtree, p.searchtree, a, b, p.initdiv)
+    valtree, funtree, searchtree = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol)
+    return TreePoly(valtree, funtree, searchtree, a, b, initdiv)
 end
 
 function hchebinterp(f, a, b; kws...)
@@ -343,7 +395,7 @@ function hchebinterp(f, a, b; kws...)
     T = float(promote_type(eltype(a),eltype(b)))
     g = if a isa Number
         if f isa BatchFunction
-            BatchFunction(x -> f.f(reinterpret(T, x)), isnothing(f.x) ? f.x : reinterpret(SVector{n,T}, f.x))
+            BatchFunction(x -> f.f(reinterpret(T, x)), eltype(f.x) <: Nothing ? f.x : reinterpret(SVector{n,T}, f.x))
         else
             BatchFunction(x -> f.(reinterpret(T, x)))
         end
