@@ -153,7 +153,7 @@ BatchFunction(f, x::AbstractArray) = BatchFunction(f, similar(x, length(x)))
 _oftype(y, x) = oftype(y, x)
 _oftype(y::T, x::MVector{1,T}) where {T} = oftype(y, only(x))
 
-function evalnext!(t, valtree, funtree, searchtree, criterion::HAdaptError, f::BatchFunction, lb, ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, initdiv) where {n,T,Td}
+function evalnext!(t, valtree, funtree, searchtree, criterion::HAdaptError, f::BatchFunction, lb, ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, initdiv, reuse) where {n,T,Td}
     tol = max(atol, rtol*maximum(norm, val))
 
     a = fun.lb
@@ -174,7 +174,7 @@ function evalnext!(t, valtree, funtree, searchtree, criterion::HAdaptError, f::B
         y = _oftype(ub, mb)
 
         chebpoints!(t, order, x, y)
-        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv)
+        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
         nextfun = _chebinterp(nextval, x, y; tol=droptol)
         push!(valtree, nextval)
         push!(funtree, nextfun)
@@ -189,7 +189,7 @@ function evalnext!(t, valtree, funtree, searchtree, criterion::HAdaptError, f::B
     fill(converged, len)
 end
 
-function evalnext!(t, valtree, funtree, searchtree, criterion::SpectralError, f::BatchFunction, lb,ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, initdiv) where {n,T,Td}
+function evalnext!(t, valtree, funtree, searchtree, criterion::SpectralError, f::BatchFunction, lb,ub, val, fun::ChebPoly{n,T,Td}, order, atol, rtol, norm, droptol, initdiv, reuse) where {n,T,Td}
     tol = max(atol, rtol*maximum(norm, val))
 
     a = fun.lb
@@ -223,7 +223,7 @@ function evalnext!(t, valtree, funtree, searchtree, criterion::SpectralError, f:
         y = _oftype(ub, mb)
         # @show x,y
         chebpoints!(t, order, x, y)
-        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv)
+        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
         nextfun = _chebinterp(nextval, x, y; tol=droptol)
         push!(valtree, nextval)
         push!(funtree, nextfun)
@@ -235,8 +235,9 @@ function evalnext!(t, valtree, funtree, searchtree, criterion::SpectralError, f:
 end
 
 # this function does batch evaluation while reusing already evaluated points
-function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, initdiv)
+function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, initdiv, reuse)
     vals = similar(first(valtree))
+    reuse || return vals .= reshape(f(resize!(x, length(t)) .= vec(t)), size(vals))
     idx = typeof(first(CartesianIndices(t)))[]
     empty!(x)
     for i in CartesianIndices(t)
@@ -283,7 +284,7 @@ function findevaluated(x, ind, valtree, funtree, searchtree, order, initdiv)
     end
 end
 
-function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b, order, atol_, rtol_, norm, maxevals, initdiv, droptol)
+function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b, order, atol_, rtol_, norm, maxevals, initdiv, droptol, reuse)
     maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
     initdiv < 1 && throw(ArgumentError("initdiv must be positive"))
 
@@ -317,7 +318,7 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
             y = _oftype(b, mb)
 
             chebpoints!(t, order, x, y)
-            vals = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv)
+            vals = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
             push!(valtree, vals)
             push!(funtree, _chebinterp(vals, x, y; tol=droptol))
             push!(searchtree, Int[])
@@ -339,7 +340,7 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
         copy!(queue, nextqueue)
         empty!(nextqueue)
         for i in queue
-            for converged in evalnext!(t, valtree, funtree, searchtree, criterion, f, a,b, valtree[i], funtree[i], order, atol, rtol, norm, droptol, initdiv)
+            for converged in evalnext!(t, valtree, funtree, searchtree, criterion, f, a,b, valtree[i], funtree[i], order, atol, rtol, norm, droptol, initdiv, reuse)
                 push!(searchtree[i], l += 1)
                 !converged && push!(nextqueue, l)
             end
@@ -367,15 +368,26 @@ function to_svec(a::T, b::S) where {T<:Real,S<:Real}
 end
 
 """
-    hchebinterp(f, a, b, [criterion=SpectralError()]; order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1)
+    hchebinterp(f, a, b, [criterion=SpectralError()]; order=15, atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1, reuse=true)
 
 Return a piecewise polynomial interpolant of `f` on the interval ``[a,b]`` of
 degree `order` that is pointwise accurate to the requested tolerances. Uses
 `criterion::AbstractAdaptCriterion` to estimate the interpolant error for
 h-adaptation. If `HAdaptError()` is used as the criterion, it may be appropriate
 to reduce the `order` to 4 to avoid unnecessary function evaluations.
+
+
+!!! note "HChebInterp 1.1"
+    The `reuse` keyword requires at least HChebInterp v1.1.
+
+The keyword `reuse` specifies that the algorithm will reuse function evaluations
+on the interpolation grid whenever possible. For expensive functions and
+interpolation problems on the order of seconds, the benefit will be noticeable,
+i.e. roughly a 12% saving in function evaluations for the default solver. Since
+looking up the interpolation points is not necessarily fast, `reuse=false` can
+be set to turn off this optimization.
 """
-function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criterion=SpectralError(), order=15, atol=nothing, rtol=nothing, norm=norm, maxevals=typemax(Int), initdiv=1, droptol=0) where {n,T}
+function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criterion=SpectralError(), order=15, atol=nothing, rtol=nothing, norm=norm, maxevals=typemax(Int), initdiv=1, droptol=0, reuse=true) where {n,T}
     @assert one(T) isa Real "a and b must be real vectors"
     s = Diagonal((b-a)/2)
     e = ones(SVector{n,typeof(one(T))})
@@ -386,7 +398,7 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T}; criteri
         f.f(map!(t2x, x, t))
     end
     ord = fill_ntuple(order, n)
-    valtree, funtree, searchtree = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol)
+    valtree, funtree, searchtree = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol, reuse)
     return TreePoly(valtree, funtree, searchtree, a, b, initdiv)
 end
 
