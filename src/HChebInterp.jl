@@ -35,7 +35,7 @@ function treesearch(callback, valtree, funtree, searchtree, x, initdiv)
         children = searchtree[i]
         indomain(fun, x) || continue
         r = callback(fun, val, children)
-        isnothing(r) || return r
+        r === nothing || return r
         while true
             found = false
             for c in children
@@ -48,7 +48,7 @@ function treesearch(callback, valtree, funtree, searchtree, x, initdiv)
             end
             if found
                 r = callback(fun, val, children)
-                isnothing(r) || return r
+                r === nothing || return r
                 continue
             end
             return nothing
@@ -72,7 +72,8 @@ function (p::TreePoly{N,T,V,Td,Tx})(x::SVector{N,Tx}) where {N,T,V,Td,Tx}
     r = treesearch(p.valtree, p.funtree, p.searchtree, t, p.initdiv) do fun, val, children
         isempty(children) ? convert(V, fun(t)) : nothing
     end
-    !isnothing(r) ? r : throw(ArgumentError("$x not in domain $(p.lb) to $(p.ub)"))
+    r === nothing && throw(ArgumentError("$x not in domain $(p.lb) to $(p.ub)"))
+    return r
 end
 (p::TreePoly{N,T,V,Td,Tx})(x) where {N,T,V,Td,Tx} = p(SVector{N,Tx}(x))
 
