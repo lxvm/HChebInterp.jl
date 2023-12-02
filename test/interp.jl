@@ -1,4 +1,4 @@
-using Test
+using Test, LinearAlgebra
 using HChebInterp
 
 ninterp = 2000
@@ -9,9 +9,11 @@ for (criterion, order) in ((SpectralError(), 15), (HAdaptError(), 6))
             atol = rtol = 1e-3
             a, b = fill(0.0,n), fill(1.0,n)
             # choose some functions to interpolate
-            f1(x) = sin(exp(sum(abs2.(x))))
-            f2(x) = exp(-sum(y ->sin(10y), x)^2)
-            for f in (f1, f2)
+            for f in (
+                x -> sin(exp(sum(abs2.(x)))),
+                x -> exp(-sum(y ->sin(10y), x)^2),
+                x -> 1e-1/(1e-2+(norm(x)-0.42)^2)*1e-1/(1e-2+(norm(x)-0.45)^2), # issue 10
+            )
                 # construct interpolant and specify atol
                 p = hchebinterp(f, a, b; criterion=criterion, order=order, atol=atol, initdiv=initdiv)
                 # check interpolation error is lower than default tolerance
