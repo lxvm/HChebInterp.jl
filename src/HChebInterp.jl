@@ -28,6 +28,34 @@ struct TreePoly{N,V,T,Td,Tx} <: Function
     initdiv::Int
 end
 
+function treesearch(callback, valtree, funtree, searchtree, x, initdiv)
+    for i in 1:min(initdiv^length(x), length(funtree))
+        val = valtree[i]
+        fun = funtree[i]
+        children = searchtree[i]
+        indomain(fun, x) || continue
+        r = callback(fun, val, children)
+        isnothing(r) || return r
+        while true
+            found = false
+            for c in children
+                indomain(funtree[c], x) || continue
+                found = true
+                val = valtree[c]
+                fun = funtree[c]
+                children = searchtree[c]
+                break
+            end
+            if found
+                r = callback(fun, val, children)
+                isnothing(r) || return r
+                continue
+            end
+            return nothing
+        end
+    end
+end
+
 _indomain(lb::T, ub::T, x::T) where {T<:SVector{1}} = lb[1] <= x[1] <= ub[1]
 function _indomain(lb::T, ub::T, x::T) where {N,T<:SVector{N}}
     return (lb[N] <= x[N] <= ub[N]) && _indomain(pop(lb), pop(ub), pop(x))
@@ -41,21 +69,10 @@ end
 # t = (x-a)*2/(b-a) - 1, x∈[a,b]
 function (p::TreePoly{N,T,V,Td,Tx})(x::SVector{N,Tx}) where {N,T,V,Td,Tx}
     t = map((a, b, x) -> (x-a)*2/(b-a)-1, p.lb, p.ub, x)
-    for i in 1:p.initdiv^N
-        fun = p.funtree[i]
-        children = p.searchtree[i]
-        indomain(fun, t) || continue
-        while true
-            isempty(children) && return convert(V, fun(t))
-            for c in children
-                indomain(p.funtree[c], t) || continue
-                fun = p.funtree[c]
-                children = p.searchtree[c]
-                break
-            end
-        end
+    r = treesearch(p.valtree, p.funtree, p.searchtree, t, p.initdiv) do fun, val, children
+        isempty(children) ? convert(V, fun(t)) : nothing
     end
-    throw(ArgumentError("$x not in domain $(p.lb) to $(p.ub)"))
+    !isnothing(r) ? r : throw(ArgumentError("$x not in domain $(p.lb) to $(p.ub)"))
 end
 (p::TreePoly{N,T,V,Td,Tx})(x) where {N,T,V,Td,Tx} = p(SVector{N,Tx}(x))
 
@@ -150,9 +167,6 @@ end
 BatchFunction(f) = BatchFunction(f, Nothing[])
 BatchFunction(f, x::AbstractArray) = BatchFunction(f, similar(x, length(x)))
 
-_oftype(y, x) = oftype(y, x)
-_oftype(y::T, x::MVector{1,T}) where {T} = oftype(y, only(x))
-
 function generateregions!(nextregions, a, b, sizes)
     ma = MVector(a)
     mb = MVector(b)
@@ -164,8 +178,8 @@ function generateregions!(nextregions, a, b, sizes)
             ma[i] = a[i]+(c[i]-1)*Δ[i]
             mb[i] = c[i]==sizes[i] ? b[i] : a[i]+c[i]*Δ[i]
         end
-        x = _oftype(a, ma)
-        y = _oftype(b, mb)
+        x = oftype(a, ma)
+        y = oftype(b, mb)
 
         push!(nextregions, (x, y))
     end
@@ -236,37 +250,26 @@ end
 
 function findevaluated(x, ind, valtree, funtree, searchtree, order, initdiv)
     tol = 10*eps(one(eltype(x)))
-    for i in 1:min(initdiv^length(x), length(funtree))
-        val = valtree[i]
-        fun = funtree[i]
-        children = searchtree[i]
-        indomain(fun, x) || continue
-        while true
-            # this search will be expensive
-            next = findfirst(ind) do idx
-                norm(_chebpoint(idx - oneunit(idx), order, fun.lb, fun.ub) - x) < tol
-            end
-            if !isnothing(next)
-                # @show x next ind val[ind[next]] children
-                return val[ind[next]]
-            elseif isempty(children)
-                return nothing
-            else
-                found = false
-                for c in children
-                    indomain(funtree[c], x) || continue
-                    found = true
-                    val = valtree[c]
-                    fun = funtree[c]
-                    children = searchtree[c]
-                    break
-                end
-                found && continue
-                return nothing
-            end
+    treesearch(valtree, funtree, searchtree, x, initdiv) do fun, val, children
+        next = findfirst(ind) do idx
+            norm(_chebpoint(idx - oneunit(idx), order, fun.lb, fun.ub) - x) < tol
         end
+        isnothing(next) ? nothing : val[ind[next]]
     end
 end
+
+function evalregions!!!!(callback, valtree, funtree, searchtree, t, nextregions, f, order, droptol, initdiv, reuse)
+    for (x, y) in nextregions
+        chebpoints!(t, order, x, y)
+        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
+        nextfun = _chebinterp(nextval, x, y; tol=droptol)
+        push!(valtree, nextval)
+        push!(funtree, nextfun)
+        push!(searchtree, Int[])
+        callback(nextfun, nextval)
+    end
+end
+evalregions!!!!(args...) = evalregions!!!!((_...) -> nothing, args...)
 
 function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b, order, atol_, rtol_, norm, maxevals, initdiv, droptol, reuse)
     maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
@@ -275,13 +278,11 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     t = Array{typeof(a),length(a)}(undef, order .+ 1)
 
     generateregions!(nextregions, a, b, ntuple(i->initdiv, Val{length(a)}()))
-    next = iterate(nextregions)
-    isnothing(next) && error("initdiv must be positive")
-    (x0, y0), state = next
 
+    # unroll first iteration to get right types of buffers
+    x0, y0 = popfirst!(nextregions)
     chebpoints!(t, order, x0, y0)
     resize!(f.x, length(t))
-
     f.x .= vec(t)
     valtree = [Array(reshape(f.f(f.x), size(t)))]
     funtree = [_chebinterp(valtree[1], x0, y0; tol=droptol)]
@@ -290,23 +291,14 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     atol = something(atol_, zero(norm(first(valtree[1]))))
     rtol = something(rtol_, iszero(atol) ? sqrt(eps(one(atol))) : zero(one(atol)))
 
-    next = iterate(nextregions, state)
-    while !isnothing(next)
-        (x, y), state = next
-        chebpoints!(t, order, x, y)
-        vals = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
-        push!(valtree, vals)
-        push!(funtree, _chebinterp(vals, x, y; tol=droptol))
-        push!(searchtree, Int[])
-        next = iterate(nextregions, state)
-    end
+    evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, initdiv, reuse)
+    empty!(nextregions)
 
     l = initdiv^length(a)
     evalsperbox = prod(order)
 
     queue = Int[]
     nextqueue = collect(1:l)
-    empty!(nextregions)
 
     while !isempty(nextqueue)
         if l*evalsperbox > maxevals
@@ -322,14 +314,8 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
             src = searchtree[i]
 
             nextchildrenregions!(nextregions, criterion, fun, val, order, norm, atol, rtol)
-            for (x, y) in nextregions
-                chebpoints!(t, order, x, y)
-                nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
-                nextfun = _chebinterp(nextval, x, y; tol=droptol)
+            evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, initdiv, reuse) do nextfun, nextval
                 push!(src, l += 1)
-                push!(valtree, nextval)
-                push!(funtree, nextfun)
-                push!(searchtree, Int[])
                 !isconverged(criterion, fun, nextfun, nextval, order, norm, atol, rtol) && push!(nextqueue, l)
             end
             empty!(nextregions)
@@ -337,11 +323,6 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     end
     return valtree, funtree, searchtree
 end
-
-
-fill_ntuple(e::Union{Number,Val}, N) = ntuple(_ -> e, N)
-fill_ntuple(e::Tuple, _) = e
-fill_ntuple(e::AbstractArray, _) = tuple(e...)
 
 """
     hchebinterp(f, a, b, [criterion=SpectralError()]; order=defaultorder(criterion), atol=0, rtol=0, norm=norm, maxevals=typemax(Int), initdiv=1, reuse=true)
@@ -376,7 +357,7 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T};
         resize!(parent(x), length(t))
         f.f(map!(t2x, x, t))
     end
-    ord = fill_ntuple(order, n)
+    ord = order isa Number ? ntuple(n->order, Val{length(a)}()) : promote(order...)
     valtree, funtree, searchtree = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol, reuse)
     return TreePoly(valtree, funtree, searchtree, a, b, initdiv)
 end
