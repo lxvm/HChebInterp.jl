@@ -165,6 +165,10 @@ Wrapper for an out-of-place function of the form `f.(x)`, where the input `x`
 will be a mutable vector with a similar element type to the input domain.
 Optionally provide a resizeable vector `x` to store the input points.
 
+!!! note "HChebInterp v1.2"
+    This version is needed to set the `max_batch` keyword. Previously one panel was
+    evaluated at a time.
+
 The keyword `max_batch` sets a soft limit on the number of points to pass to the function.
 In practice, the smallest number of complete panels with a number of points exceeding
 `max_batch` is used.
@@ -358,6 +362,9 @@ h-adaptation. By default, the `order` for `SpectralError()` is 15 and for
 
 !!! note "HChebInterp 1.1"
     The `reuse` keyword requires at least HChebInterp v1.1.
+
+!!! note "HChebInterp 1.2
+    This version is required to pass a pre-evaluated interpolant as the `initdiv` keyword.
 
 The keyword `reuse` specifies that the algorithm will reuse function evaluations
 on the interpolation grid whenever possible. For expensive functions and
