@@ -25,8 +25,8 @@ g = x -> imag(1/(x+1e-2im))
 
 p1, num1 = hchebinterp_count(g, -1, 1)
 
-p2, num2 = hchebinterp_count(fi, -1, 1, initdiv=p)
+p2, num2 = hchebinterp_count(g, -1, 1, initdiv=p)
 
-p3, num3 = hchebinterp_count(fi, -1, 1, initdiv=p1)
+p3, num3 = hchebinterp_count(g, -1, 1, initdiv=p1)
 
 @test num1 > num2 > num3
