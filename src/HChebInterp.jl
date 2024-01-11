@@ -282,16 +282,17 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     nextregions = Tuple{typeof(a),typeof(a)}[]
     t = Array{typeof(a),length(a)}(undef, order .+ 1)
 
-    if initdiv isa TreePoly
-        ninitdiv = 0
+    ninitdiv = if initdiv isa TreePoly
+        n = 0
         for (fun,children) in zip(initdiv.funtree, initdiv.searchtree)
             isempty(children) || continue
             push!(nextregions, (fun.lb, fun.ub))
-            ninitdiv += 1
+            n += 1
         end
+        n
     else
         generateregions!(nextregions, a, b, ntuple(i->initdiv, Val{length(a)}()))
-        ninitdiv = initdiv^length(a)
+        initdiv^length(a)
     end
 
     # unroll first iteration to get right types of buffers
@@ -310,13 +311,13 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     empty!(nextregions)
 
     evalsperbox = prod(order)
-    l = ninitdiv
+    l = Ref(ninitdiv) # we pass a ref to avoid boxing in the inner closure
 
     queue = Int[]
-    nextqueue = collect(1:l)
+    nextqueue = collect(1:ninitdiv)
 
     while !isempty(nextqueue)
-        if l*evalsperbox > maxevals
+        if l[]*evalsperbox > maxevals
             @warn "maxevals exceeded"
             break
         end
@@ -330,8 +331,8 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
 
             nextchildrenregions!(nextregions, criterion, fun, val, order, norm, atol, rtol)
             evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, ninitdiv, reuse) do nextfun, nextval
-                push!(src, l += 1)
-                !isconverged(criterion, fun, nextfun, nextval, order, norm, atol, rtol) && push!(nextqueue, l)
+                push!(src, l[] += 1)
+                !isconverged(criterion, fun, nextfun, nextval, order, norm, atol, rtol) && push!(nextqueue, l[])
             end
             empty!(nextregions)
         end
@@ -362,7 +363,7 @@ be set to turn off this optimization.
 function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T};
     criterion=SpectralError(), order=defaultorder(criterion),
     atol=nothing, rtol=nothing, norm=norm, maxevals=typemax(Int),
-    initdiv=1, droptol=0, reuse=true) where {n,T}
+    initdiv=1, droptol=zero(one(T)), reuse=true) where {n,T}
     @assert one(T) isa Real "a and b must be real vectors"
     s = Diagonal((b-a)/2)
     e = ones(SVector{n,typeof(one(T))})
@@ -377,14 +378,15 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T};
     return TreePoly(valtree, funtree, searchtree, a, b, ninitdiv)
 end
 
-function hchebinterp(f, a, b; kws...)
+function hchebinterp(f::F, a, b; kws...) where F
     (n = length(a)) == length(b) || throw(ArgumentError("a and b must be the same length"))
-    T = float(promote_type(eltype(a),eltype(b)))
+    z = float(zero(promote_type(eltype(a),eltype(b))))
+    T = typeof(z)
     g = if a isa Number
         if f isa BatchFunction
-            BatchFunction(x -> f.f(reinterpret(T, x)), eltype(f.x) <: Nothing ? f.x : reinterpret(SVector{n,T}, f.x))
+            BatchFunction(x -> f.f(reinterpret(typeof(z), x)), eltype(f.x) <: Nothing ? f.x : reinterpret(SVector{n,typeof(z)}, f.x))
         else
-            BatchFunction(x -> f.(reinterpret(T, x)))
+            BatchFunction(x -> f.(reinterpret(typeof(z), x)))
         end
     else
         f isa BatchFunction ? f : BatchFunction(x -> f.(x))
