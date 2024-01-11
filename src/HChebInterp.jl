@@ -159,18 +159,24 @@ end
 HAdaptError(; n=10) = HAdaptError(n)
 
 """
-    BatchFunction(f, [x])
+    BatchFunction(f, [x::AbstractArray]; max_batch::Integer=typemax(Int))
 
 Wrapper for an out-of-place function of the form `f.(x)`, where the input `x`
-will be a vector with a similar element type to the input domain.
+will be a mutable vector with a similar element type to the input domain.
 Optionally provide a resizeable vector `x` to store the input points.
+
+The keyword `max_batch` sets a soft limit on the number of points to pass to the function.
+In practice, the smallest number of complete panels with a number of points exceeding
+`max_batch` is used.
 """
 struct BatchFunction{F,X<:AbstractVector}
     f::F
     x::X
+    max_batch::Int
 end
-BatchFunction(f) = BatchFunction(f, Nothing[])
-BatchFunction(f, x::AbstractArray) = BatchFunction(f, similar(x, length(x)))
+BatchFunction(f; max_batch::Integer=typemax(Int)) = BatchFunction(f, Nothing[], max_batch)
+BatchFunction(f, x::AbstractArray; max_batch::Integer=typemax(Int)) =
+    BatchFunction(f, similar(x, length(x)), max_batch)
 
 function generateregions!(nextregions, a, b, sizes)
     ma = MVector(a)
