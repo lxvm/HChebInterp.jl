@@ -4,6 +4,10 @@
 # - various error estimation options allowing quad/oct-tree refinement,
 #   refinement one dimension at a time, a la HCubature, and everything in between
 
+# TODO
+# - add a maxbatch keyword to BatchFunction
+# - batch multiple panels at a time
+
 """
 A package for h-adaptive Chebyshev interpolation of N-D functions using
 [`FastChebInterp.jl`](https://github.com/stevengj/FastChebInterp.jl).
@@ -25,11 +29,11 @@ struct TreePoly{N,V,T,Td,Tx} <: Function
     searchtree::Vector{Vector{Int}}
     lb::SVector{N,Tx}
     ub::SVector{N,Tx}
-    initdiv::Int
+    ninitdiv::Int
 end
 
-function treesearch(callback, valtree, funtree, searchtree, x, initdiv)
-    for i in 1:min(initdiv^length(x), length(funtree))
+function treesearch(callback, valtree, funtree, searchtree, x, ninitdiv)
+    for i in 1:min(ninitdiv, length(funtree))
         val = valtree[i]
         fun = funtree[i]
         children = searchtree[i]
@@ -69,7 +73,7 @@ end
 # t = (x-a)*2/(b-a) - 1, x∈[a,b]
 function (p::TreePoly{N,T,V,Td,Tx})(x::SVector{N,Tx}) where {N,T,V,Td,Tx}
     t = map((a, b, x) -> (x-a)*2/(b-a)-1, p.lb, p.ub, x)
-    r = treesearch(p.valtree, p.funtree, p.searchtree, t, p.initdiv) do fun, val, children
+    r = treesearch(p.valtree, p.funtree, p.searchtree, t, p.ninitdiv) do fun, val, children
         isempty(children) ? convert(V, fun(t)) : nothing
     end
     r === nothing && throw(ArgumentError("$x not in domain $(p.lb) to $(p.ub)"))
@@ -230,14 +234,14 @@ function nextchildrenregions!(nextregions, criterion::SpectralError, fun::ChebPo
 end
 
 # this function does batch evaluation while reusing already evaluated points
-function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, initdiv, reuse)
+function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, ninitdiv, reuse)
     vals = similar(first(valtree))
     reuse || return vals .= reshape(f(resize!(x, length(t)) .= vec(t)), size(vals))
     idx = typeof(first(CartesianIndices(t)))[]
     empty!(x)
     for i in CartesianIndices(t)
         ti = t[i]
-        next = findevaluated(ti, CartesianIndices(axes(t)), valtree, funtree, searchtree, order, initdiv)
+        next = findevaluated(ti, CartesianIndices(axes(t)), valtree, funtree, searchtree, order, ninitdiv)
         if isnothing(next)
             push!(x, ti)
             push!(idx, i)
@@ -249,9 +253,9 @@ function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, initdiv, r
     return vals
 end
 
-function findevaluated(x, ind, valtree, funtree, searchtree, order, initdiv)
+function findevaluated(x, ind, valtree, funtree, searchtree, order, ninitdiv)
     tol = 10*eps(one(eltype(x)))
-    treesearch(valtree, funtree, searchtree, x, initdiv) do fun, val, children
+    treesearch(valtree, funtree, searchtree, x, ninitdiv) do fun, val, children
         next = findfirst(ind) do idx
             norm(_chebpoint(idx - oneunit(idx), order, fun.lb, fun.ub) - x) < tol
         end
@@ -278,7 +282,17 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     nextregions = Tuple{typeof(a),typeof(a)}[]
     t = Array{typeof(a),length(a)}(undef, order .+ 1)
 
-    generateregions!(nextregions, a, b, ntuple(i->initdiv, Val{length(a)}()))
+    if initdiv isa TreePoly
+        ninitdiv = 0
+        for (fun,children) in zip(initdiv.funtree, initdiv.searchtree)
+            isempty(children) || continue
+            push!(nextregions, (fun.lb, fun.ub))
+            ninitdiv += 1
+        end
+    else
+        generateregions!(nextregions, a, b, ntuple(i->initdiv, Val{length(a)}()))
+        ninitdiv = initdiv^length(a)
+    end
 
     # unroll first iteration to get right types of buffers
     x0, y0 = popfirst!(nextregions)
@@ -292,11 +306,11 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     atol = something(atol_, zero(norm(first(valtree[1]))))
     rtol = something(rtol_, iszero(atol) ? sqrt(eps(one(atol))) : zero(one(atol)))
 
-    evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, initdiv, reuse)
+    evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, ninitdiv, reuse)
     empty!(nextregions)
 
-    l = initdiv^length(a)
     evalsperbox = prod(order)
+    l = ninitdiv
 
     queue = Int[]
     nextqueue = collect(1:l)
@@ -315,14 +329,14 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
             src = searchtree[i]
 
             nextchildrenregions!(nextregions, criterion, fun, val, order, norm, atol, rtol)
-            evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, initdiv, reuse) do nextfun, nextval
+            evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, ninitdiv, reuse) do nextfun, nextval
                 push!(src, l += 1)
                 !isconverged(criterion, fun, nextfun, nextval, order, norm, atol, rtol) && push!(nextqueue, l)
             end
             empty!(nextregions)
         end
     end
-    return valtree, funtree, searchtree
+    return valtree, funtree, searchtree, ninitdiv
 end
 
 """
@@ -359,8 +373,8 @@ function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T};
         f.f(map!(t2x, x, t))
     end
     ord = order isa Number ? ntuple(n->order, Val{length(a)}()) : promote(order...)
-    valtree, funtree, searchtree = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol, reuse)
-    return TreePoly(valtree, funtree, searchtree, a, b, initdiv)
+    valtree, funtree, searchtree, ninitdiv = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol, reuse)
+    return TreePoly(valtree, funtree, searchtree, a, b, ninitdiv)
 end
 
 function hchebinterp(f, a, b; kws...)

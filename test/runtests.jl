@@ -11,3 +11,4 @@ Aqua.test_all(HChebInterp)
 @testset "precision" begin include("precision.jl") end
 @testset "units" begin include("units.jl") end
 @testset "countevals" begin include("countevals.jl") end
+@testset "initdiv" begin include("initdiv.jl") end
