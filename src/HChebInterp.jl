@@ -1,12 +1,5 @@
-# desired features
-# - Reusing function evaluations at hypercube corners
-# - Parallelization/vectorization of function evaluations at each level of refinement
-# - various error estimation options allowing quad/oct-tree refinement,
-#   refinement one dimension at a time, a la HCubature, and everything in between
-
 # TODO
-# - add a maxbatch keyword to BatchFunction
-# - batch multiple panels at a time
+# - batch multiple panels at a time while reusing nodes shared by adjacent panels
 
 """
 A package for h-adaptive Chebyshev interpolation of N-D functions using
