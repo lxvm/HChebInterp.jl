@@ -267,6 +267,21 @@ function findevaluated(x, ind, valtree, funtree, searchtree, order, ninitdiv)
 end
 
 function evalregions!!!!(callback, valtree, funtree, searchtree, t, nextregions, f, order, droptol, initdiv, reuse)
+    #=
+    # compile a list of all points to evaluate in the region
+    for (x, y) in nextregions
+        chebpoints!(t[i], order, x, y)
+        # preallocate the output arrays
+    end
+    # remove redundancy in the current regions
+    for (x, y) in nextregions
+        if unique push!(queue) end
+        # link nodes in region to items in queue
+    end
+    # remove redundancy from the parent regions to insert into the region values
+    findevaluated
+
+    =#
     for (x, y) in nextregions
         chebpoints!(t, order, x, y)
         nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
