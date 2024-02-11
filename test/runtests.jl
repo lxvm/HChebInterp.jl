@@ -3,7 +3,7 @@ using HChebInterp
 
 using Aqua
 
-Aqua.test_all(HChebInterp)
+@testset "aqua" Aqua.test_all(HChebInterp)
 
 @testset "HChebInterp" begin include("interp.jl") end
 @testset "arrays" begin include("arrays.jl") end
