@@ -1,25 +1,5 @@
 using Test, HChebInterp
 
-function hchebinterp_count(f, args...; kws...)
-    numevals::Int = 0
-    g = if f isa BatchFunction
-        BatchFunction(f.x) do x
-            n += length(x)
-            return f.f(x)
-        end
-    else
-        x -> (numevals += 1; f(x))
-    end
-    fun = hchebinterp(g, args...; kws...)
-    return fun, numevals
-end
-
-function leafboxes(p::HChebInterp.TreePoly)
-    tree = zip(p.searchtree, p.funtree)
-    boxes = [(fun.lb, fun.ub) for (children, fun) in tree if isempty(children)]
-    return boxes
-end
-
 f = x -> imag(1/(x+1e-1im))
 
 p, numa = hchebinterp_count(f, -1, 1)

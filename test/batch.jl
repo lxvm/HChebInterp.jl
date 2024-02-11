@@ -14,16 +14,6 @@ pb2 = hchebinterp(b2, 0.0, 4.0, order=order)
 
 @test pf(1pi) ≈ pb2(1pi)
 
-function hchebinterp_count_batch(f::BatchFunction, args...; kws...)
-    ncall::Int = 0
-    g = BatchFunction(f.x, f.max_batch) do x
-        ncall += 1
-        return f.f(x)
-    end
-    fun = hchebinterp(g, args...; kws...)
-    return fun, ncall
-end
-
 f = x -> sin(exp(x^2))
 b1 = BatchFunction(x -> f.(x); max_batch=1)
 b20 = BatchFunction(x -> f.(x); max_batch=20)
