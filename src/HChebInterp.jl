@@ -258,6 +258,9 @@ function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, ninitdiv, 
     return vals
 end
 
+
+# https://en.wikipedia.org/wiki/Niven's_theorem
+# limits the number of points we need to lookup
 function findevaluated(x, ind, valtree, funtree, searchtree, order, ninitdiv)
     tol = 10*eps(one(eltype(x)))
     treesearch(valtree, funtree, searchtree, x, ninitdiv) do fun, val, children
@@ -268,32 +271,28 @@ function findevaluated(x, ind, valtree, funtree, searchtree, order, ninitdiv)
     end
 end
 
-function isadjacent(x, y)
-    ax, bx = x
-    ay, by = y
-    for (axi, bxi, ayi, byi) in zip(ax, bx, ay, by)
-        # assuming b > a, check for overlap in current dimension
-        (bxi < ayi || axi > byi) && return false
-    end
-    return true
-end
+isonboundary(t, x...) = map(==(t), x)
 
-# https://en.wikipedia.org/wiki/Niven's_theorem
-# limits the number of points we have to lookup
 function push_nonredundant!!!(lookup, x, t, regions, order, reuse)
     resize!(lookup, length(t)*length(regions))
     empty!(resize!(x, length(t)*length(regions)))
+    strides = cumprod((1, size(t)...))
     for (i, ri) in enumerate(regions)
         chebpoints!(t, order, ri...)
-        for (j,tj) in enumerate(t)
+        for (j, (c, tj)) in enumerate(zip(CartesianIndices(t), t))
             found = 0
             if reuse
-                # TODO: remove redundancies
-                # for (k, rk) in enumerate(regions)
-                #     if i > k && isadjacent(ri, rk)
-                #         found = ...
-                #     end
-                # end
+                extremal = map(isonboundary, tj, ri...)
+                if any(any, extremal) # only points on boundaries
+                    for (k, rk) in enumerate(regions)
+                        i > k || continue
+                        adjacent = map(isonboundary, tj, rk...)
+                        all(any, zip(map(any, adjacent), map(==, ri[1], rk[1]), map(==, ri[2], rk[2]))) || continue
+                        # recall that the Chebyshev grid is in reverse
+                        idx = ntuple(d -> adjacent[d][1] ? order[d] : adjacent[d][2] ? 0 : c[d]-1, length(tj))
+                        found = lookup[length(t)*(k-1) + 1 + mapreduce(*, +, idx, strides)]
+                    end
+                end
             end
             lookup[j+length(t)*(i-1)] = found > 0 ? found : length(push!(x, tj))
         end
@@ -307,21 +306,46 @@ function evalregions!!!!!!(lookup, valtree, funtree, searchtree, t, nextregions,
         tail = _tailslice(nextregions, len)
         next = view(nextregions, tail)
         prev = view(queue, tail)
-        push_nonredundant!!!(lookup, f.x, t, next, order, reuse)
+        # push_nonredundant!!!(lookup, f.x, t, next, order, false)
         prototype = first(valtree)
         # remove redundant from lookup by populating previously evaluated into valtree
+        treelen = length(valtree)
+        resize!(lookup, length(t)*length(next))
+        empty!(resize!(f.x, length(t)*length(next)))
+        strides = cumprod((1, size(t)[begin:end-1]...))
         for i in 1:len
             v = similar(prototype)
-            if reuse
-                # then populate reusable entries into the new valtree elements and remove
-                # from lookup (zero-out) and f.x
+            ri = next[i]
+            chebpoints!(t, order, ri...)
+            for (j, (c, tj)) in enumerate(zip(CartesianIndices(t), t))
+                found = -1
+                if reuse
+                    r = findevaluated(tj, CartesianIndices(t), valtree, funtree, searchtree, order, min(treelen, ninitdiv))
+                    if r !== nothing
+                        v[j] = r
+                        found = 0
+                    else
+                        extremal = map(isonboundary, tj, ri...)
+                        if any(any, extremal) # only points on boundaries
+                            for (k, rk) in enumerate(next)
+                                i > k || continue
+                                adjacent = map(isonboundary, tj, rk...)
+                                all(any, zip(map(any, adjacent), map(==, ri[1], rk[1]), map(==, ri[2], rk[2]))) || continue
+                                # recall that the Chebyshev grid is in reverse
+                                idx = ntuple(d -> adjacent[d][1] ? order[d] : adjacent[d][2] ? 0 : c[d]-1, length(tj))
+                                found = lookup[length(t)*(k-1) + 1 + mapreduce(*, +, idx, strides)]
+                            end
+                        end
+                    end
+                end
+                lookup[j+length(t)*(i-1)] = found >= 0 ? found : length(push!(f.x, tj))
             end
             push!(valtree, v)
         end
         y = f.f(f.x)
         for i in 1:len
             val = valtree[end-len+i]
-            for (i,j) in enumerate(view(lookup, (1+(i-1)*length(t)):(i*length(t))))
+            for (i, j) in enumerate(view(lookup, (1+(i-1)*length(t)):(i*length(t))))
                 j == 0 && continue # assume this has been populated before
                 val[i] = y[j]
             end
@@ -377,7 +401,7 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     nextqueue = collect(1:ninitdiv)
 
     while !isempty(nextqueue)
-        if length(valtree)*evalsperbox > maxevals
+        if length(valtree)*evalsperbox >= maxevals
             @warn "maxevals exceeded"
             break
         end
