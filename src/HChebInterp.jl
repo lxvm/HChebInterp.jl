@@ -1,12 +1,6 @@
-# desired features
-# - Reusing function evaluations at hypercube corners
-# - Parallelization/vectorization of function evaluations at each level of refinement
-# - various error estimation options allowing quad/oct-tree refinement,
-#   refinement one dimension at a time, a la HCubature, and everything in between
-
 # TODO
-# - add a maxbatch keyword to BatchFunction
-# - batch multiple panels at a time
+# - batch multiple panels at a time while reusing nodes shared by adjacent panels
+# - use a faster tree data structure in the evaluator, e.g. KDTree from NearestNeighbors.jl
 
 """
 A package for h-adaptive Chebyshev interpolation of N-D functions using
@@ -60,6 +54,8 @@ function treesearch(callback, valtree, funtree, searchtree, x, ninitdiv)
     end
 end
 
+leafnodes(p::TreePoly) = ((fun, val) for (children, fun, val) in zip(p.searchtree, p.funtree, p.valtree) if isempty(children))
+
 _indomain(lb::T, ub::T, x::T) where {T<:SVector{1}} = lb[1] <= x[1] <= ub[1]
 function _indomain(lb::T, ub::T, x::T) where {N,T<:SVector{N}}
     return (lb[N] <= x[N] <= ub[N]) && _indomain(pop(lb), pop(ub), pop(x))
@@ -73,6 +69,7 @@ end
 # t = (x-a)*2/(b-a) - 1, x∈[a,b]
 function (p::TreePoly{N,T,V,Td,Tx})(x::SVector{N,Tx}) where {N,T,V,Td,Tx}
     t = map((a, b, x) -> (x-a)*2/(b-a)-1, p.lb, p.ub, x)
+    # @show t
     r = treesearch(p.valtree, p.funtree, p.searchtree, t, p.ninitdiv) do fun, val, children
         isempty(children) ? convert(V, fun(t)) : nothing
     end
@@ -159,18 +156,28 @@ end
 HAdaptError(; n=10) = HAdaptError(n)
 
 """
-    BatchFunction(f, [x])
+    BatchFunction(f, [x::AbstractArray]; max_batch::Integer=1)
 
 Wrapper for an out-of-place function of the form `f.(x)`, where the input `x`
-will be a vector with a similar element type to the input domain.
+will be a mutable vector with a similar element type to the input domain.
 Optionally provide a resizeable vector `x` to store the input points.
+
+!!! note "HChebInterp v1.2"
+    This version is needed to set the `max_batch` keyword. Previously one panel was
+    evaluated at a time, which is equivalent to the default (`max_batch` = 1).
+
+The keyword `max_batch` sets a soft limit on the number of points to pass to the function.
+In practice, the smallest number of complete panels with a number of points exceeding
+`max_batch` is used.
 """
 struct BatchFunction{F,X<:AbstractVector}
     f::F
     x::X
+    max_batch::Int
 end
-BatchFunction(f) = BatchFunction(f, Nothing[])
-BatchFunction(f, x::AbstractArray) = BatchFunction(f, similar(x, length(x)))
+BatchFunction(f; max_batch::Integer=1) = BatchFunction(f, Nothing[], max_batch)
+BatchFunction(f, x::AbstractArray; max_batch::Integer=1) =
+    BatchFunction(f, similar(x, length(x)), max_batch)
 
 function generateregions!(nextregions, a, b, sizes)
     ma = MVector(a)
@@ -178,7 +185,7 @@ function generateregions!(nextregions, a, b, sizes)
     n = length(a)
     Δ = map(/, b - a, sizes)
 
-    @inbounds for c in CartesianIndices(sizes) # Val ntuple loops are unrolled
+    @inbounds for c in CartesianIndices(sizes)
         for i = 1:n
             ma[i] = a[i]+(c[i]-1)*Δ[i]
             mb[i] = c[i]==sizes[i] ? b[i] : a[i]+c[i]*Δ[i]
@@ -188,20 +195,19 @@ function generateregions!(nextregions, a, b, sizes)
 
         push!(nextregions, (x, y))
     end
-    return
+    return nextregions
 end
 
 defaultorder(::HAdaptError) = 4
 
-function isconverged(criterion::HAdaptError, fun, nextfun::ChebPoly{n,T,Td}, val, order, norm, atol, rtol) where {n,T,Td}
-    p = Iterators.product(ntuple(m -> range(nextfun.lb[m], nextfun.ub[m], length=order[m]*criterion.n), Val{n}())...)
-    E = maximum(r_ -> (r = SVector{n,Td}(r_); norm(fun(r) - nextfun(r))), p)
+function isconverged(criterion::HAdaptError, fun, nextfun::ChebPoly, val, order, norm, atol, rtol)
+    p = Iterators.product(ntuple(m -> range(nextfun.lb[m], nextfun.ub[m], length=order[m]*criterion.n), length(order))...)
+    E = maximum(r_ -> (r = SVector(r_); norm(fun(r) - nextfun(r))), p)
     return E < max(atol, rtol*maximum(norm, val))
 end
 
-function nextchildrenregions!(nextregions, criterion::HAdaptError, fun::ChebPoly{n,T,Td}, val, order, norm, atol, rtol) where {n,T,Td}
-    generateregions!(nextregions, fun.lb, fun.ub, ntuple(i->2,Val{n}()))
-    return nothing
+function nextchildrenregions!(nextregions, ::HAdaptError, fun::ChebPoly, val, order, norm, atol, rtol)
+    return generateregions!(nextregions, fun.lb, fun.ub, ntuple(i->2,length(order)))
 end
 
 function defaultorder(criterion::SpectralError)
@@ -210,12 +216,12 @@ function defaultorder(criterion::SpectralError)
     return order
 end
 
-function isconvergeddims(criterion::SpectralError, fun::ChebPoly{n,T,Td}, val, order, norm, atol, rtol) where {n,T,Td}
+function isconvergeddims(criterion::SpectralError, fun::ChebPoly, val, order, norm, atol, rtol)
     @assert minimum(order) > criterion.n "SpectralError requires that the order be greater than the number of Chebyshev coefficients to use for error estimation"
     tol = max(atol, rtol*maximum(norm, val))
-    ntuple(Val{n}()) do i
+    ntuple(length(order)) do i
         # assuming size(fun.coefs) = order
-        idx = CartesianIndices(ntuple(j -> j==i ? (2+order[i]-criterion.n:size(fun.coefs,i)) : axes(fun.coefs, j), Val{n}()))
+        idx = CartesianIndices(ntuple(j -> j==i ? (2+order[i]-criterion.n:size(fun.coefs,i)) : 1:size(fun.coefs, j), length(order)))
         tol > maximum(sum(norm, @view(fun.coefs[idx]); dims=i))
     end
 end
@@ -224,13 +230,12 @@ function isconverged(criterion::SpectralError, parent, fun, val, order, norm, at
     return all(isconvergeddims(criterion, fun, val, order, norm, atol, rtol))
 end
 
-function nextchildrenregions!(nextregions, criterion::SpectralError, fun::ChebPoly{n,T,Td}, val, order, norm, atol, rtol) where {n,T,Td}
+function nextchildrenregions!(nextregions, criterion::SpectralError, fun::ChebPoly, val, order, norm, atol, rtol)
     dimsconverged = isconvergeddims(criterion, fun, val, order, norm, atol, rtol)
     all(dimsconverged) && return nothing
 
     newsize = map(v -> v ? 1 : 2, dimsconverged)
-    generateregions!(nextregions, fun.lb, fun.ub, newsize)
-    return nothing
+    return generateregions!(nextregions, fun.lb, fun.ub, newsize)
 end
 
 # this function does batch evaluation while reusing already evaluated points
@@ -253,6 +258,9 @@ function batchevaluate!(x, f, t, order, valtree, funtree, searchtree, ninitdiv, 
     return vals
 end
 
+
+# https://en.wikipedia.org/wiki/Niven's_theorem
+# limits the number of points we need to lookup
 function findevaluated(x, ind, valtree, funtree, searchtree, order, ninitdiv)
     tol = 10*eps(one(eltype(x)))
     treesearch(valtree, funtree, searchtree, x, ninitdiv) do fun, val, children
@@ -263,18 +271,110 @@ function findevaluated(x, ind, valtree, funtree, searchtree, order, ninitdiv)
     end
 end
 
-function evalregions!!!!(callback, valtree, funtree, searchtree, t, nextregions, f, order, droptol, initdiv, reuse)
-    for (x, y) in nextregions
-        chebpoints!(t, order, x, y)
-        nextval = batchevaluate!(f.x, f.f, t, order, valtree, funtree, searchtree, initdiv, reuse)
-        nextfun = _chebinterp(nextval, x, y; tol=droptol)
-        push!(valtree, nextval)
-        push!(funtree, nextfun)
-        push!(searchtree, Int[])
-        callback(nextfun, nextval)
+isonboundary(t, x...) = map(==(t), x)
+
+function push_nonredundant!!!(lookup, x, t, regions, order, reuse)
+    resize!(lookup, length(t)*length(regions))
+    empty!(resize!(x, length(t)*length(regions)))
+    strides = cumprod((1, size(t)...))
+    for (i, ri) in enumerate(regions)
+        chebpoints!(t, order, ri...)
+        for (j, (c, tj)) in enumerate(zip(CartesianIndices(t), t))
+            found = 0
+            if reuse
+                extremal = map(isonboundary, tj, ri...)
+                if any(any, extremal) # only points on boundaries
+                    for (k, rk) in enumerate(regions)
+                        i > k || continue
+                        adjacent = map(isonboundary, tj, rk...)
+                        all(any, zip(map(any, adjacent), map(==, ri[1], rk[1]), map(==, ri[2], rk[2]))) || continue
+                        # recall that the Chebyshev grid is in reverse
+                        idx = ntuple(d -> adjacent[d][1] ? order[d] : adjacent[d][2] ? 0 : c[d]-1, length(tj))
+                        found = lookup[length(t)*(k-1) + 1 + mapreduce(*, +, idx, strides)]
+                    end
+                end
+            end
+            lookup[j+length(t)*(i-1)] = found > 0 ? found : length(push!(x, tj))
+        end
+    end
+    return
+end
+
+function evalregions!!!!!!(lookup, valtree, funtree, searchtree, t, nextregions, queue, f, order, tol, ninitdiv, reuse)
+    while length(nextregions) > 0
+        len = min(length(nextregions), max(1, ceil(Int, f.max_batch/length(t))))
+        tail = _tailslice(nextregions, len)
+        next = view(nextregions, tail)
+        prev = view(queue, tail)
+        # push_nonredundant!!!(lookup, f.x, t, next, order, false)
+        prototype = first(valtree)
+        # remove redundant from lookup by populating previously evaluated into valtree
+        treelen = length(valtree)
+        resize!(lookup, length(t)*length(next))
+        empty!(resize!(f.x, length(t)*length(next)))
+        strides = cumprod((1, size(t)[begin:end-1]...))
+        for i in 1:len
+            v = similar(prototype)
+            ri = next[i]
+            chebpoints!(t, order, ri...)
+            for (j, (c, tj)) in enumerate(zip(CartesianIndices(t), t))
+                found = -1
+                if reuse
+                    r = findevaluated(tj, CartesianIndices(t), valtree, funtree, searchtree, order, min(treelen, ninitdiv))
+                    if r !== nothing
+                        v[j] = r
+                        found = 0
+                    else
+                        extremal = map(isonboundary, tj, ri...)
+                        if any(any, extremal) # only points on boundaries
+                            for (k, rk) in enumerate(next)
+                                i > k || continue
+                                adjacent = map(isonboundary, tj, rk...)
+                                all(any, zip(map(any, adjacent), map(==, ri[1], rk[1]), map(==, ri[2], rk[2]))) || continue
+                                # recall that the Chebyshev grid is in reverse
+                                idx = ntuple(d -> adjacent[d][1] ? order[d] : adjacent[d][2] ? 0 : c[d]-1, length(tj))
+                                found = lookup[length(t)*(k-1) + 1 + mapreduce(*, +, idx, strides)]
+                            end
+                        end
+                    end
+                end
+                lookup[j+length(t)*(i-1)] = found >= 0 ? found : length(push!(f.x, tj))
+            end
+            push!(valtree, v)
+        end
+        y = f.f(f.x)
+        for i in 1:len
+            val = valtree[end-len+i]
+            for (i, j) in enumerate(view(lookup, (1+(i-1)*length(t)):(i*length(t))))
+                j == 0 && continue # assume this has been populated before
+                val[i] = y[j]
+            end
+            view(lookup, (1+(i-1)*length(t)):(i*length(t)))
+            push!(funtree, _chebinterp(val, next[i]...; tol))
+            (parent = prev[i]) != 0 && push!(searchtree[parent], length(funtree))
+            push!(searchtree, Int[])
+        end
+        resize!(nextregions, length(nextregions)-length(next))
+        resize!(queue, length(queue)-length(prev))
     end
 end
-evalregions!!!!(args...) = evalregions!!!!((_...) -> nothing, args...)
+
+_tailslice(v, len) = eachindex(v)[end-len+1:end]
+function evalregions!!(t, nextregions, f, order, tol, initdiv, reuse)
+    # first batch
+    next = view(nextregions, _tailslice(nextregions, min(length(nextregions), max(1, ceil(Int, f.max_batch/length(t))))))#(length(nextregions)-min(length(nextregions), max(1, ceil(Int, f.max_batch/length(t)))))
+    lookup = zeros(Int, length(next)*length(t))
+    push_nonredundant!!!(lookup, f.x, t, next, order, reuse)
+    y = f.f(f.x)
+    valtree = [Array(view(y, reshape(view(lookup, (1+(i-1)*length(t)):(i*length(t))), size(t)))) for i in 1:length(next)]
+    funtree = [_chebinterp(valtree[i], x, y; tol) for (i, (x, y)) in enumerate(next)]
+    searchtree = [Int[] for _ in 1:length(next)]
+
+    resize!(nextregions, length(nextregions)-length(next))
+    queue = zeros(Int, length(nextregions))
+    evalregions!!!!!!(lookup, valtree, funtree, searchtree, t, nextregions,  queue, f, order, tol, initdiv, reuse)
+    return lookup, valtree, funtree, searchtree, queue
+end
 
 function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b, order, atol_, rtol_, norm, maxevals, initdiv, droptol, reuse)
     maxevals < 0 && throw(ArgumentError("invalid negative maxevals"))
@@ -283,59 +383,47 @@ function hchebinterp_(criterion::AbstractAdaptCriterion, f::BatchFunction, a, b,
     t = Array{typeof(a),length(a)}(undef, order .+ 1)
 
     if initdiv isa TreePoly
-        ninitdiv = 0
-        for (fun,children) in zip(initdiv.funtree, initdiv.searchtree)
-            isempty(children) || continue
-            push!(nextregions, (fun.lb, fun.ub))
-            ninitdiv += 1
-        end
+        append!(nextregions, ((fun.lb, fun.ub) for (fun,) in leafnodes(initdiv)))
+    elseif initdiv isa AbstractArray
+        append!(nextregions, initdiv)
     else
-        generateregions!(nextregions, a, b, ntuple(i->initdiv, Val{length(a)}()))
-        ninitdiv = initdiv^length(a)
+        generateregions!(nextregions, a, b, ntuple(i->initdiv, length(a)))
     end
+    ninitdiv = length(nextregions)
 
-    # unroll first iteration to get right types of buffers
-    x0, y0 = popfirst!(nextregions)
-    chebpoints!(t, order, x0, y0)
-    resize!(f.x, length(t))
-    f.x .= vec(t)
-    valtree = [Array(reshape(f.f(f.x), size(t)))]
-    funtree = [_chebinterp(valtree[1], x0, y0; tol=droptol)]
-    searchtree = [Int[]]
+    lookup, valtree, funtree, searchtree, queue = evalregions!!(t, nextregions, f, order, droptol, ninitdiv, reuse)
 
     atol = something(atol_, zero(norm(first(valtree[1]))))
     rtol = something(rtol_, iszero(atol) ? sqrt(eps(one(atol))) : zero(one(atol)))
 
-    evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, ninitdiv, reuse)
-    empty!(nextregions)
+    evalsperbox = length(t)
 
-    evalsperbox = prod(order)
-    l = ninitdiv
-
-    queue = Int[]
-    nextqueue = collect(1:l)
+    nextqueue = collect(1:ninitdiv)
 
     while !isempty(nextqueue)
-        if l*evalsperbox > maxevals
+        if length(valtree)*evalsperbox >= maxevals
             @warn "maxevals exceeded"
             break
         end
 
         copy!(queue, nextqueue)
         empty!(nextqueue)
+        empty!(nextregions)
         for i in queue
-            val = valtree[i]
-            fun = funtree[i]
-            src = searchtree[i]
-
-            nextchildrenregions!(nextregions, criterion, fun, val, order, norm, atol, rtol)
-            evalregions!!!!(valtree, funtree, searchtree, t, nextregions, f, order, droptol, ninitdiv, reuse) do nextfun, nextval
-                push!(src, l += 1)
-                !isconverged(criterion, fun, nextfun, nextval, order, norm, atol, rtol) && push!(nextqueue, l)
+            nextchildrenregions!(nextregions, criterion, funtree[i], valtree[i], order, norm, atol, rtol)
+            for _ in length(nextqueue)+1:length(nextregions)
+                push!(nextqueue, i)
             end
-            empty!(nextregions)
+        end
+        evalregions!!!!!!(lookup, valtree, funtree, searchtree, t, nextregions, nextqueue, f, order, droptol, ninitdiv, reuse)
+        for i in queue
+            fun = funtree[i]
+            for j in searchtree[i]
+                !isconverged(criterion, fun, funtree[j], valtree[j], order, norm, atol, rtol) && push!(nextqueue, j)
+            end
         end
     end
+
     return valtree, funtree, searchtree, ninitdiv
 end
 
@@ -352,7 +440,12 @@ h-adaptation. By default, the `order` for `SpectralError()` is 15 and for
 !!! note "HChebInterp 1.1"
     The `reuse` keyword requires at least HChebInterp v1.1.
 
-The keyword `reuse` specifies that the algorithm will reuse function evaluations
+!!! note "HChebInterp 1.2
+    This version is required to pass a pre-evaluated interpolant as the `initdiv` keyword.
+    Also, `initdiv` may be an array of tuples containing the limits of the initial boxes,
+    which **must** cover the region `(a, b)`.
+
+The keyword `reuse::Bool` specifies that the algorithm will reuse function evaluations
 on the interpolation grid whenever possible. For expensive functions and
 interpolation problems on the order of seconds, the benefit will be noticeable,
 i.e. roughly a 12% saving in function evaluations for the default solver. Since
@@ -362,29 +455,30 @@ be set to turn off this optimization.
 function hchebinterp(f::BatchFunction, a::SVector{n,T}, b::SVector{n,T};
     criterion=SpectralError(), order=defaultorder(criterion),
     atol=nothing, rtol=nothing, norm=norm, maxevals=typemax(Int),
-    initdiv=1, droptol=0, reuse=true) where {n,T}
+    initdiv=1, droptol=zero(one(T)), reuse=true) where {n,T}
     @assert one(T) isa Real "a and b must be real vectors"
     s = Diagonal((b-a)/2)
     e = ones(SVector{n,typeof(one(T))})
     t2x = t -> a + s * (e + t)
     x = eltype(f.x) <: Nothing ? typeof(a)[] : f.x
-    g = BatchFunction(typeof(e)[]) do t
+    g = BatchFunction(typeof(e)[], f.max_batch) do t
         resize!(parent(x), length(t))
         f.f(map!(t2x, x, t))
     end
-    ord = order isa Number ? ntuple(n->order, Val{length(a)}()) : promote(order...)
+    ord = order isa Number ? ntuple(n->order, length(a)) : promote(order...)
     valtree, funtree, searchtree, ninitdiv = hchebinterp_(criterion, g, -e, e, ord, atol, rtol, norm, maxevals, initdiv, droptol, reuse)
     return TreePoly(valtree, funtree, searchtree, a, b, ninitdiv)
 end
 
-function hchebinterp(f, a, b; kws...)
+function hchebinterp(f::F, a, b; kws...) where F
     (n = length(a)) == length(b) || throw(ArgumentError("a and b must be the same length"))
-    T = float(promote_type(eltype(a),eltype(b)))
+    z = float(zero(promote_type(eltype(a),eltype(b))))
+    T = typeof(z)
     g = if a isa Number
         if f isa BatchFunction
-            BatchFunction(x -> f.f(reinterpret(T, x)), eltype(f.x) <: Nothing ? f.x : reinterpret(SVector{n,T}, f.x))
+            BatchFunction(x -> f.f(reinterpret(typeof(z), x)), eltype(f.x) <: Nothing ? f.x : reinterpret(SVector{n,typeof(z)}, f.x), f.max_batch)
         else
-            BatchFunction(x -> f.(reinterpret(T, x)))
+            BatchFunction(x -> f.(reinterpret(typeof(z), x)))
         end
     else
         f isa BatchFunction ? f : BatchFunction(x -> f.(x))
