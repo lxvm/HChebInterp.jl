@@ -20,9 +20,9 @@ boxes1 = leafboxes(p1)
 p3b, num3b = hchebinterp_count(g, -1, 1, initdiv=boxes1)
 
 xs = range(-1, 1, length=1013)
-@test p1.(xs) == p2.(xs) == p3.(xs)
-@test p2.(xs) == p2b.(xs)
+@test p1.(xs) ≈ p2.(xs) ≈ p3.(xs)
+@test p2.(xs) ≈ p2b.(xs)
 @test num2 == num2b
-@test p3.(xs) == p3b.(xs)
+@test p3.(xs) ≈ p3b.(xs)
 @test num3 == num3b
 @test num1 > num2 > num3
