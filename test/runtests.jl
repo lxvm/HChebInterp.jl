@@ -3,10 +3,9 @@ using HChebInterp
 
 using Aqua
 
-@testset "aqua" Aqua.test_all(HChebInterp)
-
 include("utils.jl")
-@testset "HChebInterp" begin include("interp.jl") end
+@testset "aqua" begin Aqua.test_all(HChebInterp) end
+@testset "interp" begin include("interp.jl") end
 @testset "arrays" begin include("arrays.jl") end
 @testset "batch" begin include("batch.jl") end
 @testset "precision" begin include("precision.jl") end
